@@ -1,0 +1,11 @@
+.env.local
+.venv/
+__pycache__/
+.pytest_cache/
+ai_runs/
+logs/
+objects/
+reports/
+results/
+.venv.bad_20260914_045502/
+.venv.bad_20260914_045502

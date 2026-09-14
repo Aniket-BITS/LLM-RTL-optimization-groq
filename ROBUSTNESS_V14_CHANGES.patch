@@ -1,0 +1,1723 @@
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/CLI_HELP.txt /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/CLI_HELP.txt
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/CLI_HELP.txt	2026-09-13 22:35:50.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/CLI_HELP.txt	2026-09-14 00:40:14.387150210 +0000
+@@ -13,6 +13,9 @@
+                            [--max-guidance-groups MAX_GUIDANCE_GROUPS]
+                            [--max-excerpts-per-group MAX_EXCERPTS_PER_GROUP]
+                            [--max-guidance-chars MAX_GUIDANCE_CHARS]
++                           [--model-history-limit MODEL_HISTORY_LIMIT]
++                           [--formal-timeout-s FORMAL_TIMEOUT_S]
++                           [--ppa-timeout-s PPA_TIMEOUT_S]
+                            [--max-area-regression-pct MAX_AREA_REGRESSION_PCT]
+                            [--max-power-regression-pct MAX_POWER_REGRESSION_PCT]
+                            [--max-setup-slack-regression-ns MAX_SETUP_SLACK_REGRESSION_NS]
+@@ -66,6 +69,14 @@
+   --max-guidance-groups MAX_GUIDANCE_GROUPS
+   --max-excerpts-per-group MAX_EXCERPTS_PER_GROUP
+   --max-guidance-chars MAX_GUIDANCE_CHARS
++  --model-history-limit MODEL_HISTORY_LIMIT
++                        maximum recent meaningful attempts sent verbatim to
++                        the model; older history is aggregated
++  --formal-timeout-s FORMAL_TIMEOUT_S
++                        per temporal/cycle-exact formal invocation timeout in
++                        seconds
++  --ppa-timeout-s PPA_TIMEOUT_S
++                        per ORFS synthesis/physical stage timeout in seconds
+   --max-area-regression-pct MAX_AREA_REGRESSION_PCT
+   --max-power-regression-pct MAX_POWER_REGRESSION_PCT
+   --max-setup-slack-regression-ns MAX_SETUP_SLACK_REGRESSION_NS
+@@ -74,8 +85,34 @@
+   --repetitions REPETITIONS
+   --self-test
+ 
+-Latency-aware transformation-choice update (v1.2)
+-- Pipeline insertion is available immediately when latency headroom exists; the LLM chooses whether it is worthwhile.
+-- Latency is described as a limited resource, not a preferred transformation.
+-- --model-history-limit defaults to 5 recent meaningful attempts; older search history is aggregated.
+-- Model intent uses primary_transformation + proposed_transformations; backend structural effects and verified latency remain authoritative.
++
++=== rtl-opt-batch ===
++usage: run_rtl_opt_batch.py [-h] --output OUTPUT --pairs PAIRS [PAIRS ...]
++                            [--resume] [--retry-failed]
++                            [--max-design-runtime-min MAX_DESIGN_RUNTIME_MIN]
++
++Fault-isolated multi-design wrapper for rtl-opt-groq. Each design runs in its
++own subprocess/output directory so one baseline/tool failure cannot terminate
++the rest of a benchmark sweep. Resume is intentionally design-granular:
++completed designs are skipped; failed/incomplete designs can be archived and
++retried without destroying evidence.
++
++options:
++  -h, --help            show this help message and exit
++  --output OUTPUT
++  --pairs PAIRS [PAIRS ...]
++  --resume              skip completed design directories
++  --retry-failed        archive and rerun completed non-success designs
++  --max-design-runtime-min MAX_DESIGN_RUNTIME_MIN
++                        subprocess wall-clock limit per design; 0 disables
++
++
++=== aggregate-results ===
++usage: aggregate_results.py [-h] --root ROOT --output-prefix OUTPUT_PREFIX
++
++Aggregate nEBULA per-attempt evidence into canonical JSON and CSV tables.
++
++options:
++  -h, --help            show this help message and exit
++  --root ROOT
++  --output-prefix OUTPUT_PREFIX
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/OPERATING_COMMANDS.md /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/OPERATING_COMMANDS.md
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/OPERATING_COMMANDS.md	2026-09-13 22:35:50.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/OPERATING_COMMANDS.md	2026-09-14 00:40:11.951118897 +0000
+@@ -196,15 +196,64 @@
+ regenerated from it, and remaining attempts may improve it further. Golden stays
+ unchanged for all formal proofs.
+ 
+-## Scope intentionally frozen out
++## Robustness/scalability release (v1.4)
+ 
+-This version does **not** implement latency-changing formal verification,
+-pipelining admission, retiming latency shifts, or `max_latency_regression_cycles`.
+-Those are the next feature after this non-latency optimizer core is validated and
+-frozen.
++Latency-aware fixed-cycle verification remains unchanged from V1.3. V1.4 adds
++operational hardening only: model self-checks are advisory, signed post-synthesis
++netlists receive an auditable OpenSTA compatibility copy, raw synthesis remains
++authoritative for dedupe, stage timeouts are configurable, design capabilities
++are recorded before attempt 1, and multi-design runs are fault-isolated.
++
++EQY/SBY, variable-latency protocols, multi-clock latency-changing transforms,
++and formal/mapping architecture redesigns remain intentionally deferred.
+ 
+ Latency-aware transformation-choice update (v1.2)
+ - Pipeline insertion is available immediately when latency headroom exists; the LLM chooses whether it is worthwhile.
+ - Latency is described as a limited resource, not a preferred transformation.
+ - --model-history-limit defaults to 5 recent meaningful attempts; older search history is aggregated.
+ - Model intent uses primary_transformation + proposed_transformations; backend structural effects and verified latency remain authoritative.
++
++## V1.4 robust single-design example
++
++```bash
++./nebula.sh rtl-opt-groq \
++  --output "$PWD/ai_runs/v1_4_mul" \
++  --pairs mul \
++  --max-model-calls 8 \
++  --max-meaningful-iterations 5 \
++  --max-latency-regression-cycles 1 \
++  --formal-timeout-s 120 \
++  --ppa-timeout-s 900 \
++  --optimizer-mode guided
++```
++
++## V1.4 fault-isolated batch example
++
++```bash
++./nebula.sh rtl-opt-batch \
++  --output "$PWD/ai_runs/v1_4_batch" \
++  --pairs adder mul saturating_add register \
++  --resume \
++  --max-design-runtime-min 60 \
++  --max-model-calls 8 \
++  --max-meaningful-iterations 5 \
++  --max-latency-regression-cycles 1 \
++  --formal-timeout-s 120 \
++  --ppa-timeout-s 900 \
++  --optimizer-mode guided
++```
++
++`--resume` skips completed design directories. `--retry-failed` archives a
++previous design directory before rerunning it. Batch state is written
++atomically to `batch_state.json`; aggregate attempt tables are produced as
++`aggregate_results.json` and `aggregate_results.csv`.
++
++## Environment preflight
++
++```bash
++./nebula.sh doctor --groq --calibration --verbose
++```
++
++The doctor checks tool resolution, platform/liberty availability, schemas,
++disk space, Groq credentials, RTL-OPT payload integrity, and the STA netlist
++compatibility helper before an expensive run.
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/ROBUSTNESS_V14_VALIDATION_RESULTS.txt /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/ROBUSTNESS_V14_VALIDATION_RESULTS.txt
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/ROBUSTNESS_V14_VALIDATION_RESULTS.txt	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/ROBUSTNESS_V14_VALIDATION_RESULTS.txt	2026-09-14 00:41:57.966513384 +0000
+@@ -0,0 +1,26 @@
++phase5_to_9_groq_r3_latency_aware_v1_4 robustness validation
++Date: 2026-09-14
++
++Performed in assistant container (no live Groq/Yosys/OpenROAD project run claimed):
++- Python py_compile over timing_automation/*.py: PASS
++- pytest timing_automation/tests: 69 passed, 14 skipped
++- run_rtl_opt_groq.py --self-test: 11/11 PASS
++- top-level self_test.py: PASS
++- STA compatibility unit tests: PASS
++- mocked synthesis -> signed-netlist sanitize -> global-route handoff: PASS
++- design capability classification tests: PASS
++- aggregate CSV/JSON extraction tested against an existing 5-attempt V1.3 run: PASS
++
++Important runtime follow-up required locally:
++1. Confirm mul baseline passes the prior OpenSTA STA-0171 signed-declaration failure.
++2. Confirm saturating_add baseline passes the same compatibility point.
++3. Confirm adder V1.3 behavior is unchanged.
++4. Use rtl-opt-batch for fault-isolated multi-design validation.
++
++Architecture intentionally unchanged:
++- Golden is immutable formal/latency reference.
++- Current Best is promoted-only PPA reference.
++- LLM chooses transformation/editing base; backend owns truth.
++- Temporal fixed-cycle formal semantics unchanged.
++- Normalized synthesis dedupe uses RAW Yosys netlist, never STA-sanitized text.
++- EQY/SBY remain deferred.
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/VALIDATION.md /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/VALIDATION.md
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/VALIDATION.md	2026-09-13 21:20:35.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/VALIDATION.md	2026-09-14 00:42:43.456485153 +0000
+@@ -85,3 +85,21 @@
+ ## Guided source-provenance regression fix
+ 
+ The final FSM pre-freeze regression showed that RTL cones were structurally mapped, but guidance fell back to exploratory because the authoritative Current-Best snapshot path differed from the source path recorded in the Yosys physical-run checkpoint. The guidance adapter now resolves the actual `VERILOG_FILES` path from the physical-run command and accepts it for mapping only when its SHA-256 exactly matches both the run metadata and authoritative Current-Best source. Focused pure-Python tests pass. A full local FSM EDA/model rerun is still required to validate guided mode end-to-end.
++
++## V1.4 robustness/scalability validation
++
++V1.4 intentionally preserves V1.3 optimizer/formal semantics and hardens the
++interfaces around them. Model self-checks are advisory for schema 3.3; raw Yosys
++synthesis is preserved and remains the normalized-hash authority; a safe
++post-synthesis STA compatibility copy removes signed declaration qualifiers only
++when the netlist is structurally safe; design capabilities are recorded before
++attempt 1; formal/PPA stage timeouts are configurable; batch runs are
++fault-isolated and design-granular resumable; aggregate JSON/CSV output is
++available.
++
++Assistant-environment validation: Python compile PASS, 69 pytest PASS / 14
++SKIPPED, runner self-test 11/11 PASS, top-level self-test PASS, and a mocked
++synthesis -> signed-netlist sanitize -> global-route handoff PASS. No live Groq,
++Yosys project formal, or OpenROAD PPA run is claimed here. Runtime confirmation
++must verify that `mul` and `saturating_add` pass the previous OpenSTA STA-0171
++signed-declaration failure and that `adder` remains unchanged.
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/VERSION.json /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/VERSION.json
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/VERSION.json	2026-09-13 23:02:14.910088074 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/VERSION.json	2026-09-14 00:42:54.816723203 +0000
+@@ -26,13 +26,19 @@
+     "OPERATING_COMMANDS.md",
+     "README_GROQ.md",
+     "VALIDATION.md",
++    "VERSION.json",
++    "nebula.sh",
++    "timing_automation/calibrate_pairs_v3.py",
+     "timing_automation/evaluate_candidate.py",
+     "timing_automation/extract_candidate.py",
++    "timing_automation/lint_candidate.py",
++    "timing_automation/nebula_doctor.py",
+     "timing_automation/optimizer_history.py",
+     "timing_automation/prompt_renderer.py",
+     "timing_automation/report_guided_experiment.py",
+-    "timing_automation/run_rtl_opt_groq.py",
+     "timing_automation/response_schema_latency.json",
++    "timing_automation/run_candidate_flow.py",
++    "timing_automation/run_rtl_opt_groq.py",
+     "timing_automation/test_guided_rtl_opt.py",
+     "timing_automation/tests/test_latency_verification.py"
+   ],
+@@ -53,20 +59,28 @@
+     "recent_meaningful_history_default": 5
+   },
+   "created_files": [
++    "COMPACT_CHOICE_CHANGES.patch",
++    "COMPACT_CHOICE_VALIDATION_RESULTS.txt",
++    "LATENCY_AWARE_CHANGES.patch",
++    "LATENCY_VALIDATION_RESULTS.txt",
++    "PIPELINE_ALIGNMENT_CHANGES.patch",
++    "PIPELINE_ALIGNMENT_VALIDATION_RESULTS.txt",
++    "ROBUSTNESS_V14_CHANGES.patch",
++    "ROBUSTNESS_V14_VALIDATION_RESULTS.txt",
++    "timing_automation/aggregate_results.py",
++    "timing_automation/design_capabilities.py",
+     "timing_automation/latency_contract.py",
+     "timing_automation/latency_verifier.py",
+     "timing_automation/response_schema_latency.json",
++    "timing_automation/run_rtl_opt_batch.py",
++    "timing_automation/sta_netlist_compat.py",
+     "timing_automation/tests/test_latency_verification.py",
+-    "LATENCY_VALIDATION_RESULTS.txt",
+-    "LATENCY_AWARE_CHANGES.patch",
+-    "COMPACT_CHOICE_CHANGES.patch",
+-    "COMPACT_CHOICE_VALIDATION_RESULTS.txt",
+-    "PIPELINE_ALIGNMENT_CHANGES.patch",
+-    "PIPELINE_ALIGNMENT_VALIDATION_RESULTS.txt"
++    "timing_automation/tests/test_robustness_v14.py",
++    "timing_automation/tests/test_sta_netlist_compat.py"
+   ],
+   "created_utc_date": "2026-09-14",
+   "default_optimizer_mode": "auto",
+-  "derived_from": "phase5_to_9_groq_r3_latency_aware_v1_2",
++  "derived_from": "phase5_to_9_groq_r3_latency_aware_v1_3",
+   "guidance_schema": "guidance_packet/1",
+   "latency_changing_support": {
+     "default_max_latency_regression_cycles": 0,
+@@ -159,6 +173,36 @@
+   "provider": "groq",
+   "response_schema_version": "3.3",
+   "result_schema": "groq_result/5",
++  "robustness_scalability_v1_4": {
++    "aggregate_json_csv": true,
++    "atomic_run_state_checkpoint": true,
++    "baseline_physical_failure_distinguished_from_timing_infeasibility": true,
++    "batch_retry_archives_previous_evidence": true,
++    "design_capability_preflight": true,
++    "doctor_checks": [
++      "tools",
++      "platform/liberty",
++      "schemas",
++      "disk",
++      "groq credential",
++      "dataset hash",
++      "STA compatibility"
++    ],
++    "eqy_sby_deferred": true,
++    "fault_isolated_batch_runner": true,
++    "formal_timeout_configurable": true,
++    "model_self_checks_advisory_for_schema_3_3": true,
++    "ppa_timeout_configurable": true,
++    "prompt_section_char_accounting": true,
++    "resume_scope": "design-granular via rtl-opt-batch",
++    "sta_netlist_compatibility": {
++      "fail_closed_on_behavioral_signed_sensitive_expressions": true,
++      "implemented": true,
++      "normalized_synthesis_hash_uses_raw_artifact": true,
++      "raw_yosys_artifact_preserved": true,
++      "scope": "post-synthesis structural Verilog only"
++    }
++  },
+   "rtl_opt_groq_default_max_tokens": 6500,
+   "rtl_opt_groq_response_schema": "timing_automation/response_schema_latency.json",
+   "runtime_followup_fix": {
+@@ -199,16 +243,37 @@
+     "timing_automation/tests/test_complete_verilog.py": "6e341c29866d726cee43410c2bd0e1bb881f96b6c61bd10cb35b86322becc32e",
+     "timing_automation/yosys_structure.py": "e4b3eb7f948233dbe98d47900e61bcec3476369c488cd9fa3825c326793abdf7"
+   },
++  "v1_4_file_sha256": {
++    "CLI_HELP.txt": "305eaf67a32fb3d663b62a3b1e8df30a1c635f2db6d2ffb63ef4fad6f97d7d08",
++    "OPERATING_COMMANDS.md": "3ec2b521bc479e82d1ed133b8bc4667cd7db483a7ab1c93f021daf445169214e",
++    "ROBUSTNESS_V14_VALIDATION_RESULTS.txt": "845624f017678ded5544d26574b6bc03c829c774cb99c286f42b0a1130b0c718",
++    "VALIDATION.md": "31ef028dc8bff975b4ae4a95f435f9de84bc05b0c756d1d4d37d74056b96a200",
++    "nebula.sh": "52aa14635bde257f29162383d0d30372d66ecd07b7cdeba3cd1249db1defd016",
++    "timing_automation/aggregate_results.py": "f721e3885639aba434b834db0e0080bbe10a784f71b7f8df81fa4cbb6d758ae6",
++    "timing_automation/calibrate_pairs_v3.py": "c5ac64a6285bcd218e310fec2ba32f2ad446c80872d1b684083eb4732d985e76",
++    "timing_automation/design_capabilities.py": "6f9352080124fd594efe37f4a93a82c1bfd50e8bf93538d3dbe576018b8c7897",
++    "timing_automation/lint_candidate.py": "ceb7a9809b3ddbfcbc8099fe3dcff489fbef689f280b1dad8a737c385faa5eff",
++    "timing_automation/nebula_doctor.py": "15ec05b7f4023cae761ae1502da2a70655519dea137614a884f0ad8ae573c30f",
++    "timing_automation/prompt_renderer.py": "5509ffd738ff4dbc2e6b8ee8eca39a63330e6483b346e825e6d017421e52714a",
++    "timing_automation/response_schema_latency.json": "0785f58f4ee3daa8bb2e096df23a4c29a2a3a112c3667147c43df9667a034ce8",
++    "timing_automation/run_candidate_flow.py": "7f833dde280c1fe41f6735d4cbb2f63ffc1db46b626e330c47133e343a683f5a",
++    "timing_automation/run_rtl_opt_batch.py": "ec12d64f3234c1e7fe4c7e794600a61458ad691475afa621a557701aa14946b6",
++    "timing_automation/run_rtl_opt_groq.py": "eb679589887eedb244d6a0ab96fec81bc45ec738360a68efa90d28379b36e858",
++    "timing_automation/sta_netlist_compat.py": "5fcba33f65750d749b2b4ea2b1d58db29fcbfecee1df0aa3c83bd5358ac054a6",
++    "timing_automation/tests/test_robustness_v14.py": "f88606af6e3ce3ee43f8ca504f8e1b9b57b8577a7269bdb50959062491718934",
++    "timing_automation/tests/test_sta_netlist_compat.py": "116e5143300a6435dc819129aafdff5a91de4205c087b1267fa7cef056118b7a"
++  },
+   "validation": {
+-    "focused_regression": "71 passed, 14 skipped",
++    "aggregate_existing_v1_3_run": "passed",
++    "focused_regression": "69 passed, 14 skipped",
+     "live_groq_run": false,
++    "mocked_signed_netlist_physical_handoff": "passed",
+     "modified_python_py_compile": "passed",
+-    "note": "V1.3 prompt-only alignment fix validated statically/pure-Python here; relies on user V1.2 runtime evidence for the motivating counterexamples.",
++    "note": "No live EDA/provider run executed in assistant environment; user runtime validation required for mul/saturating_add signed-netlist handoff.",
+     "openroad_ppa_run": false,
+-    "prompt_renderer_self_test": "passed",
+     "runner_self_test": "11 passed",
+     "top_level_self_test": "passed",
+     "yosys_temporal_formal_run": false
+   },
+-  "version": "phase5_to_9_groq_r3_latency_aware_v1_3"
++  "version": "phase5_to_9_groq_r3_latency_aware_v1_4"
+ }
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/nebula.sh /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/nebula.sh
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/nebula.sh	1980-01-01 00:00:00.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/nebula.sh	2026-09-14 00:36:05.265081218 +0000
+@@ -14,10 +14,12 @@
+  optimize) script=run_optimizer ;;
+  closure) script=run_closure_loop ;;
+  rtl-opt-groq) script=run_rtl_opt_groq ;;
++ rtl-opt-batch) script=run_rtl_opt_batch ;;
++ aggregate-results) script=aggregate_results ;;
+  report-guided-experiment) script=report_guided_experiment ;;
+  doctor) script=nebula_doctor ;;
+  preflight) script=pre_groq_check ;;
+  build-request) script=build_request ;;
+- *) echo 'Usage: nebula.sh {self-test|e2e|doctor|test|smoke|analysis|build-request|preflight|optimize|closure|rtl-opt-groq} [arguments]'; exit 2 ;;
++ *) echo 'Usage: nebula.sh {self-test|e2e|doctor|test|smoke|analysis|build-request|preflight|optimize|closure|rtl-opt-groq|rtl-opt-batch|aggregate-results} [arguments]'; exit 2 ;;
+ esac
+ exec "$NEBULA_PYTHON" "$ROOT/timing_automation/$script.py" "$@"
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/aggregate_results.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/aggregate_results.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/aggregate_results.py	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/aggregate_results.py	2026-09-14 00:39:44.961660410 +0000
+@@ -0,0 +1,112 @@
++#!/usr/bin/env python3
++"""Aggregate nEBULA per-attempt evidence into canonical JSON and CSV tables."""
++from __future__ import annotations
++
++import argparse
++import csv
++import json
++from pathlib import Path
++from typing import Any, Mapping
++
++SCHEMA = "nebula_aggregate_results/1"
++
++FIELDS = [
++    "design", "attempt_number", "prompt_tokens", "completion_tokens", "total_tokens",
++    "path_groups_considered", "optimization_mode", "candidate_source_hash",
++    "normalized_synthesis_hash", "lint_result", "formal_equivalence_result",
++    "latency_result", "ppa_result", "promotion_rejection_result", "rejection_reason",
++    "primary_transformation", "proposed_transformations", "verified_latency_delta_cycles",
++    "current_best_epoch", "model_call_number", "meaningful_iteration_number",
++]
++
++
++def nested(mapping: Mapping[str, Any] | None, *keys: str) -> Any:
++    cur: Any = mapping or {}
++    for key in keys:
++        if not isinstance(cur, Mapping):
++            return None
++        cur = cur.get(key)
++    return cur
++
++
++def row_for(design: str, attempt: Mapping[str, Any]) -> dict[str, Any]:
++    usage = attempt.get("groq_usage") if isinstance(attempt.get("groq_usage"), Mapping) else {}
++    guidance = attempt.get("guidance") if isinstance(attempt.get("guidance"), Mapping) else {}
++    synthesis = attempt.get("synthesis") if isinstance(attempt.get("synthesis"), Mapping) else {}
++    candidate_hash = attempt.get("candidate_bundle_sha256") or attempt.get("candidate_response_sha256")
++    formal = attempt.get("formal") if isinstance(attempt.get("formal"), Mapping) else {}
++    latency = attempt.get("latency_result") if isinstance(attempt.get("latency_result"), Mapping) else {}
++    promotion = attempt.get("promotion") if isinstance(attempt.get("promotion"), Mapping) else {}
++    ppa = attempt.get("ppa") if isinstance(attempt.get("ppa"), Mapping) else {}
++    transforms = attempt.get("proposed_transformations") or []
++    return {
++        "design": design,
++        "attempt_number": attempt.get("attempt_number") or attempt.get("attempt"),
++        "prompt_tokens": usage.get("prompt_tokens") or usage.get("input_tokens"),
++        "completion_tokens": usage.get("completion_tokens") or usage.get("output_tokens"),
++        "total_tokens": usage.get("total_tokens"),
++        "path_groups_considered": guidance.get("path_groups_sent_to_llm") or guidance.get("path_groups_considered"),
++        "optimization_mode": attempt.get("optimization_mode") or guidance.get("mode_used"),
++        "candidate_source_hash": candidate_hash,
++        "normalized_synthesis_hash": nested(synthesis, "candidate_hash", "sha256"),
++        "lint_result": nested(attempt, "lint", "ok") if isinstance(attempt.get("lint"), Mapping) else attempt.get("lint_result"),
++        "formal_equivalence_result": formal.get("status") or attempt.get("formal_classification"),
++        "latency_result": latency.get("status") or ("passed" if latency.get("passed") else None),
++        "ppa_result": "measured" if ppa else None,
++        "promotion_rejection_result": "promoted" if attempt.get("status") == "promoted" else attempt.get("status"),
++        "rejection_reason": attempt.get("rejection_reason") or attempt.get("reason") or promotion.get("reason"),
++        "primary_transformation": attempt.get("primary_transformation"),
++        "proposed_transformations": ";".join(str(x) for x in transforms) if isinstance(transforms, list) else transforms,
++        "verified_latency_delta_cycles": latency.get("verified_total_latency_regression_cycles") or latency.get("verified_shift_cycles"),
++        "current_best_epoch": attempt.get("current_best_epoch"),
++        "model_call_number": attempt.get("model_call_number"),
++        "meaningful_iteration_number": attempt.get("meaningful_iteration_number"),
++    }
++
++
++def collect(root: Path) -> list[dict[str, Any]]:
++    rows: list[dict[str, Any]] = []
++    seen = set()
++    for path in sorted(root.rglob("result.json")):
++        try:
++            data = json.loads(path.read_text())
++        except Exception:
++            continue
++        if not isinstance(data, Mapping) or not isinstance(data.get("attempts"), list):
++            continue
++        design = str(data.get("id") or path.parent.name)
++        for attempt in data["attempts"]:
++            if not isinstance(attempt, Mapping):
++                continue
++            key = (str(path.resolve()), attempt.get("attempt_number") or attempt.get("attempt"))
++            if key in seen:
++                continue
++            seen.add(key)
++            rows.append(row_for(design, attempt))
++    return rows
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument("--root", type=Path, required=True)
++    ap.add_argument("--output-prefix", type=Path, required=True)
++    args = ap.parse_args()
++    rows = collect(args.root.resolve())
++    prefix = args.output_prefix.resolve()
++    prefix.parent.mkdir(parents=True, exist_ok=True)
++    json_path = prefix.with_suffix(".json")
++    csv_path = prefix.with_suffix(".csv")
++    json_path.write_text(json.dumps({"schema": SCHEMA, "attempts": rows}, indent=2, sort_keys=True) + "\n")
++    with csv_path.open("w", newline="", encoding="utf-8") as f:
++        writer = csv.DictWriter(f, fieldnames=FIELDS)
++        writer.writeheader()
++        for row in rows:
++            writer.writerow({k: row.get(k) for k in FIELDS})
++    print(f"JSON: {json_path}")
++    print(f"CSV:  {csv_path}")
++    print(f"Attempts: {len(rows)}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/calibrate_pairs_v3.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/calibrate_pairs_v3.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/calibrate_pairs_v3.py	2026-09-13 16:08:12.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/calibrate_pairs_v3.py	2026-09-14 00:34:30.733689058 +0000
+@@ -18,6 +18,10 @@
+ except ImportError:
+     from timing_automation.equivalence_terms import EquivalenceVerdict
+ import re
++try:
++    from sta_netlist_compat import preserve_raw_and_sanitize, StaNetlistCompatError
++except ImportError:
++    from timing_automation.sta_netlist_compat import preserve_raw_and_sanitize, StaNetlistCompatError
+ 
+ import calibrate_pairs as v2
+ 
+@@ -167,21 +171,75 @@
+     return recipe, normalized, profile
+ 
+ 
+-def physical(pair, directory, side, recipe, source, label, repeat=0, stage="grt"):
++def physical(pair, directory, side, recipe, source, label, repeat=0, stage="grt", timeout_s=900):
++    """Run one frozen physical arm with an auditable Yosys->STA handoff.
++
++    For stages after synthesis we first establish the synthesis checkpoint,
++    preserve the raw Yosys netlist, sanitize only safe structural ``signed``
++    declarations for OpenSTA compatibility, then continue the same FLOW_VARIANT.
++    The raw artifact remains authoritative for synthesis hashing.
++    """
+     if not recipe.verify_frozen_files()["ok"]:
+         raise ValueError("Frozen recipe mutated")
+     expected = digest(source)
+-    # The directory binds artifacts to one immutable experiment/arm/repetition.
+     namespace = hashlib.sha256(str(directory.resolve()).encode()).hexdigest()[:16]
+     variant = f"calibration_v3_{pair['id']}_{namespace}_{label}_{side}_{repeat}"
+-    result = v2.run(["make", f"DESIGN_CONFIG={directory / 'config.mk'}", f"FLOW_VARIANT={variant}",
+-                     f"VERILOG_FILES={source}", stage], directory / f"{side}.{label}.{repeat}.{stage}.log", 900)
++    log_prefix = directory / f"{side}.{label}.{repeat}"
++    base_command = [
++        "make", f"DESIGN_CONFIG={directory / 'config.mk'}", f"FLOW_VARIANT={variant}",
++        f"VERILOG_FILES={source}",
++    ]
++    design_results = ROOT / "results/nangate45" / ("rtlopt_" + pair["id"]) / variant
++    netlist = design_results / "1_2_yosys.v"
++    raw_netlist = design_results / "1_2_yosys.raw.v"
++    compat_meta = design_results / "1_2_yosys_sta_compat.json"
++
++    preparation = None
++    compat = None
++    if stage != "synth":
++        preparation = v2.run(base_command + ["synth"], directory / f"{side}.{label}.{repeat}.synth_prep.log", timeout_s)
++        if preparation["exit_code"] != 0 or not netlist.is_file():
++            result = dict(preparation)
++            result.update(
++                recipe_fingerprint_sha256=recipe.fingerprint_sha256,
++                source_sha256=expected,
++                status="failed",
++                failure_reason=("synthesis_command_failed" if preparation["exit_code"] != 0 else "synthesis_netlist_not_found"),
++                synthesis_netlist=str(netlist),
++                synthesis_netlist_raw=str(raw_netlist if raw_netlist.is_file() else netlist),
++                synthesis_netlist_sta=str(netlist),
++                synthesis_preparation=preparation,
++            )
++            return result
++        try:
++            compat = preserve_raw_and_sanitize(netlist, raw_path=raw_netlist, metadata_path=compat_meta)
++        except Exception as exc:
++            return {
++                **preparation,
++                "recipe_fingerprint_sha256": recipe.fingerprint_sha256,
++                "source_sha256": expected,
++                "status": "failed",
++                "failure_reason": "sta_netlist_compat_failed",
++                "sta_netlist_compat": {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"},
++                "synthesis_netlist": str(netlist),
++                "synthesis_netlist_raw": str(raw_netlist if raw_netlist.is_file() else netlist),
++                "synthesis_netlist_sta": str(netlist),
++                "synthesis_preparation": preparation,
++            }
++
++    result = v2.run(base_command + [stage], directory / f"{side}.{label}.{repeat}.{stage}.log", timeout_s)
+     result.update(recipe_fingerprint_sha256=recipe.fingerprint_sha256, source_sha256=expected)
+     metrics_path = ROOT / "logs/nangate45" / ("rtlopt_" + pair["id"]) / variant / "5_1_grt.json"
+     result["metrics_path"] = str(metrics_path)
+-    result["synthesis_netlist"] = str(ROOT / "results/nangate45" / ("rtlopt_" + pair["id"]) / variant / "1_2_yosys.v")
++    result["synthesis_netlist"] = str(netlist)
++    result["synthesis_netlist_raw"] = str(raw_netlist if raw_netlist.is_file() else netlist)
++    result["synthesis_netlist_sta"] = str(netlist)
++    if preparation is not None:
++        result["synthesis_preparation"] = preparation
++    if compat is not None:
++        result["sta_netlist_compat"] = compat
+     if stage == "synth":
+-        netlist_exists = Path(result["synthesis_netlist"]).is_file()
++        netlist_exists = netlist.is_file()
+         if result["exit_code"] != 0:
+             result["failure_reason"] = "synthesis_command_failed"
+         elif not netlist_exists:
+@@ -200,6 +258,8 @@
+             result["metrics"] = metrics
+             result["metrics_sha256"] = digest(metrics_path)
+     result["status"] = "passed" if "metrics" in result else "failed"
++    if result["status"] != "passed" and not result.get("failure_reason"):
++        result["failure_reason"] = "physical_stage_failed"
+     return result
+ 
+ 
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/design_capabilities.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/design_capabilities.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/design_capabilities.py	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/design_capabilities.py	2026-09-14 00:33:33.216965973 +0000
+@@ -0,0 +1,136 @@
++#!/usr/bin/env python3
++"""Conservative preflight capability summary for nEBULA designs.
++
++The result is advisory for orchestration and prompt construction.  It never
++replaces lint/formal verification.  The aim is to avoid spending model/formal
++budget on transformations that are impossible under the currently supported
++contract and to make scalability limitations explicit before attempt 1.
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import re
++from pathlib import Path
++from typing import Any, Mapping
++
++try:
++    from design_manifest import DesignManifest
++except ImportError:  # pragma: no cover
++    from timing_automation.design_manifest import DesignManifest
++
++SCHEMA = "design_capabilities/1"
++RESET_NAMES = {"reset", "rst", "rst_n", "clear"}
++
++
++def _read_sources(manifest: DesignManifest, base_dir: Path) -> str:
++    return "\n".join(
++        p.read_text(encoding="utf-8", errors="replace")
++        for p in manifest.resolved_source_files(base_dir)
++        if p.is_file()
++    )
++
++
++def _state_bits(module: Mapping[str, Any]) -> int:
++    total = 0
++    cells = module.get("cells") if isinstance(module, Mapping) else None
++    if not isinstance(cells, Mapping):
++        return 0
++    for cell in cells.values():
++        if not isinstance(cell, Mapping):
++            continue
++        ctype = str(cell.get("type") or "").lower()
++        if "dff" not in ctype and "latch" not in ctype:
++            continue
++        params = cell.get("parameters") if isinstance(cell.get("parameters"), Mapping) else {}
++        width = params.get("WIDTH", 1)
++        try:
++            if isinstance(width, str) and set(width) <= {"0", "1"}:
++                value = int(width, 2)
++            else:
++                value = int(width)
++        except Exception:
++            value = 1
++        total += max(1, value)
++    return total
++
++
++def analyze_design_capabilities(
++    *,
++    pair: Mapping[str, Any],
++    manifest: DesignManifest,
++    base_dir: Path,
++    elaborated_module: Mapping[str, Any],
++    latency_contract: Mapping[str, Any] | None = None,
++) -> dict[str, Any]:
++    text = _read_sources(manifest, Path(base_dir))
++    signed_ports = bool(re.search(r"\b(?:input|output|inout)\s+(?:wire\s+|reg\s+|logic\s+)?signed\b", text))
++    memory_like = bool(re.search(r"\b(?:reg|logic)\s*(?:signed\s*)?(?:\[[^\]]+\]\s*)?[A-Za-z_$][\w$]*\s*\[[^\]]+\]", text))
++    state_bits = _state_bits(elaborated_module)
++    edges = set(pair.get("baseline", {}).get("edge_signals") or [])
++    non_reset_edges = sorted(x for x in edges if str(x).lower() not in RESET_NAMES)
++    if manifest.clocks:
++        declared = [c.port for c in manifest.clocks if not c.virtual]
++        clock_ports = sorted(set(declared))
++    else:
++        profile = pair.get("timing_profile") if isinstance(pair.get("timing_profile"), Mapping) else {}
++        clock = profile.get("clock_port")
++        clock_ports = [clock] if isinstance(clock, str) and clock else non_reset_edges
++    clock_ports = sorted(set(str(x) for x in clock_ports if x))
++
++    complexity = "low"
++    if memory_like or state_bits >= 512:
++        complexity = "high"
++    elif state_bits >= 128:
++        complexity = "medium"
++
++    contract = dict(latency_contract or {})
++    latency_supported = bool(contract.get("supported")) if contract else len(clock_ports) == 1
++    latency_reason = contract.get("reason") if contract else (
++        None if latency_supported else "latency-changing optimization requires exactly one supported reference clock"
++    )
++    guided_risk = "memory_or_register_array_endpoints" if memory_like else None
++
++    return {
++        "schema": SCHEMA,
++        "design": pair.get("id") or manifest.design_id,
++        "top": manifest.top,
++        "clock_ports": clock_ports,
++        "clock_count": len(clock_ports),
++        "has_reset": bool(manifest.resets) or bool(re.search(r"\b(?:reset|rst|rst_n|clear)\b", text, flags=re.I)),
++        "signed_top_ports_detected": signed_ports,
++        "contains_memory_or_register_array": memory_like,
++        "estimated_sequential_state_bits": state_bits,
++        "expected_formal_complexity": complexity,
++        "guided_mapping_risk": guided_risk,
++        "latency_change_supported": latency_supported,
++        "latency_change_unsupported_reason": latency_reason,
++        "recommended_optimization_mode": "cycle_exact_only" if not latency_supported else "latency_aware_allowed",
++        "authority": "advisory_preflight_only_backend_verification_remains_authoritative",
++    }
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument("--manifest", type=Path, required=True)
++    ap.add_argument("--base-dir", type=Path, required=True)
++    ap.add_argument("--output", type=Path, required=True)
++    args = ap.parse_args()
++    manifest = DesignManifest.read_json(args.manifest)
++    # Standalone CLI intentionally emits source-level capability information;
++    # orchestrators may enrich it with elaborated state estimates.
++    result = analyze_design_capabilities(
++        pair={"id": manifest.design_id, "baseline": {"edge_signals": []}},
++        manifest=manifest,
++        base_dir=args.base_dir,
++        elaborated_module={},
++        latency_contract=None,
++    )
++    args.output.parent.mkdir(parents=True, exist_ok=True)
++    args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
++    print(json.dumps(result, indent=2, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/lint_candidate.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/lint_candidate.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/lint_candidate.py	2026-09-13 16:08:03.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/lint_candidate.py	2026-09-14 00:31:36.049609257 +0000
+@@ -391,15 +391,19 @@
+ # =============================================================================
+ 
+ 
++# Model-authored self-checks are advisory for modern complete-source schemas.
++# Backend/Yosys evidence below is the only hard authority for interface, clock,
++# reset, latch, domain, and latency safety.  Legacy patch schemas retain their
++# historical diagnostics for replay compatibility.
+ REQUIRED_TRUE_SELF_CHECKS = (
+     "interface_unchanged",
+     "parameters_unchanged",
+-    "latency_unchanged",
+     "clock_reset_behavior_unchanged",
+     "source_bundle_targets_valid",
+     "no_new_latches",
+     "no_new_clock_domains",
+ )
++MODERN_ADVISORY_SELF_CHECK_SCHEMAS = {"3.1", "3.2", "3.3"}
+ 
+ 
+ def validate_candidate_against_request(
+@@ -465,14 +469,20 @@
+     checks["frozen_ranges_untouched"] = frozen_ok
+ 
+     self_checks=candidate.payload.get("self_checks")
++    schema_version=str(candidate.payload.get("schema_version") or "")
+     self_checks_ok=isinstance(self_checks,dict)
+     if isinstance(self_checks,dict):
+         for key in REQUIRED_TRUE_SELF_CHECKS:
+             if self_checks.get(key) is not True:
+-                self_checks_ok=False; reasons.append(f"candidate self_checks.{key} is not true")
+-    else:
++                self_checks_ok=False
++                if schema_version not in MODERN_ADVISORY_SELF_CHECK_SCHEMAS:
++                    reasons.append(f"candidate self_checks.{key} is not true")
++    elif schema_version not in MODERN_ADVISORY_SELF_CHECK_SCHEMAS:
+         reasons.append("candidate self_checks is not an object")
++    # Diagnostic only for schema >= 3.1.  It is intentionally absent from
++    # mandatory_checks and never authorizes/rejects modern candidates.
+     checks["model_self_checks_all_true"] = self_checks_ok
++    checks["model_self_checks_advisory"] = schema_version in MODERN_ADVISORY_SELF_CHECK_SCHEMAS
+     return checks,reasons
+ 
+ # =============================================================================
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/nebula_doctor.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/nebula_doctor.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/nebula_doctor.py	1980-01-01 00:00:00.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/nebula_doctor.py	2026-09-14 00:36:31.815111051 +0000
+@@ -6,6 +6,7 @@
+ import hashlib
+ import importlib.util
+ import json
++import os
+ import re
+ import shutil
+ import subprocess
+@@ -164,6 +165,52 @@
+             "1_1_yosys_canonicalize.rtlil before relying on RTL mapping."
+         )
+ 
++    # Storage/token-provider/schema checks catch common long-run failures before
++    # expensive calibration or Groq calls start.
++    usage = shutil.disk_usage(flow)
++    free_gb = usage.free / (1024 ** 3)
++    disk_ok = free_gb >= 1.0
++    checks.append({"kind": "storage", "label": "free_disk_gb", "path": str(flow), "ok": disk_ok, "required": True, "free_gb": round(free_gb, 2)})
++    if not disk_ok:
++        failures.append(f"less than 1 GiB free under {flow}: {free_gb:.2f} GiB")
++    elif free_gb < 5.0:
++        warnings.append(f"low free disk space for multi-design ORFS runs: {free_gb:.2f} GiB")
++
++    groq_present = bool(os.environ.get("GROQ_API_KEY"))
++    checks.append({"kind": "credential", "label": "GROQ_API_KEY", "ok": groq_present, "required": bool(args.groq)})
++    if args.groq and not groq_present:
++        failures.append("GROQ_API_KEY is required under --groq")
++    elif not groq_present:
++        warnings.append("GROQ_API_KEY is not set; rtl-opt-groq cannot run until credentials are loaded")
++
++    for schema_name in ("response_schema_latency.json", "response_schema_prefreeze.json"):
++        schema_path = flow / "timing_automation" / schema_name
++        ok = False
++        error = None
++        try:
++            value = json.loads(schema_path.read_text(encoding="utf-8"))
++            ok = isinstance(value, dict) and value.get("$schema") == "https://json-schema.org/draft/2020-12/schema"
++        except Exception as exc:
++            error = f"{type(exc).__name__}: {exc}"
++        checks.append({"kind": "schema", "label": schema_name, "path": str(schema_path), "ok": ok, "required": True, "error": error})
++        if not ok:
++            failures.append(f"invalid required response schema: {schema_path}" + (f" ({error})" if error else ""))
++
++    try:
++        try:
++            from sta_netlist_compat import sanitize_text
++        except ImportError:
++            from timing_automation.sta_netlist_compat import sanitize_text
++        sample = "module m(a,y); input signed [0:0] a; output [0:0] y; BUF_X1 u(.A(a),.Z(y)); endmodule\n"
++        transformed, compat = sanitize_text(sample)
++        compat_ok = " signed " not in transformed and compat.get("signed_declaration_qualifiers_removed") == 1
++        checks.append({"kind": "compat", "label": "sta_netlist_compat", "ok": compat_ok, "required": True})
++        if not compat_ok:
++            failures.append("STA netlist compatibility self-check failed")
++    except Exception as exc:
++        checks.append({"kind": "compat", "label": "sta_netlist_compat", "ok": False, "required": True, "error": str(exc)})
++        failures.append(f"STA netlist compatibility self-check failed: {exc}")
++
+     pyarrow_available = importlib.util.find_spec("pyarrow") is not None
+     checks.append({"kind": "python", "label": "pyarrow", "ok": pyarrow_available, "required": bool(args.calibration)})
+     if args.calibration and not pyarrow_available:
+@@ -214,6 +261,7 @@
+     ap.add_argument("--openroad", default=None)
+     ap.add_argument("--json", dest="json_output", default=None, help="Write structured doctor result JSON.")
+     ap.add_argument("--calibration", action="store_true", help="Require PyArrow and a hash-valid RTL-OPT payload.")
++    ap.add_argument("--groq", action="store_true", help="Require GROQ_API_KEY for optimizer execution.")
+     ap.add_argument("--verbose", action="store_true")
+     return ap.parse_args()
+ 
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py	2026-09-13 23:00:49.711184428 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py	2026-09-14 00:38:53.574265085 +0000
+@@ -151,6 +151,7 @@
+             "remaining_latency_headroom_cycles": 0,
+             "model_prediction_authority": "advisory_only",
+         }),
++        "design_capabilities": request.get("design_capabilities", {}),
+         "current_best_evidence": {
+             key: value
+             for key, value in request.get("current_best_evidence", {}).items()
+@@ -167,6 +168,19 @@
+     budget["rendered_chars"] = advisory_chars()
+     user = json.dumps(payload, sort_keys=True)
+     budget["total_prompt_chars"] = len(system) + len(user)
++    # Section-level character accounting makes future token optimization
++    # evidence-driven without changing provider tokenization assumptions.
++    budget["section_chars"] = {
++        "system": len(system),
++        "golden": len(json.dumps(golden, sort_keys=True)),
++        "current_best": len(json.dumps(current_best, sort_keys=True)),
++        "guidance": len(json.dumps(packet, sort_keys=True)),
++        "history": len(json.dumps(history, sort_keys=True)),
++        "search_summary": len(json.dumps(request.get("search_summary") or {}, sort_keys=True)),
++        "response_schema": len(json.dumps(schema, sort_keys=True)),
++        "latency_policy": len(json.dumps(payload.get("latency_policy") or {}, sort_keys=True)),
++        "design_capabilities": len(json.dumps(payload.get("design_capabilities") or {}, sort_keys=True)),
++    }
+     budget["cap_scope"] = "guidance + compact previous-attempt history; Golden/Current-Best source contracts are protected"
+     budget["history_entries_sent"] = len(history)
+     budget["search_summary_chars"] = len(json.dumps(request.get("search_summary") or {}, sort_keys=True))
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json	2026-09-13 22:35:50.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json	2026-09-14 00:31:45.279202816 +0000
+@@ -264,7 +264,8 @@
+             "type": "string"
+           }
+         }
+-      }
++      },
++      "description": "Advisory model self-assessment only; backend verification is authoritative."
+     }
+   },
+   "$comment": "Latency-aware complete-source schema. Model latency predictions/self-checks are advisory. Backend independently proves the temporal relation."
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/run_candidate_flow.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/run_candidate_flow.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/run_candidate_flow.py	1980-01-01 00:00:00.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/run_candidate_flow.py	2026-09-14 00:32:45.785441271 +0000
+@@ -86,6 +86,11 @@
+ from pathlib import Path
+ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+ 
++try:
++    from sta_netlist_compat import preserve_raw_and_sanitize
++except ImportError:
++    from timing_automation.sta_netlist_compat import preserve_raw_and_sanitize
++
+ 
+ # =============================================================================
+ # Local imports
+@@ -870,21 +875,57 @@
+ 
+         return metadata
+ 
+-    proc = subprocess.run(
+-        command,
+-        cwd=str(flow_dir),
+-        text=True,
+-    )
++    # For post-synthesis stages, establish the synthesis checkpoint first,
++    # preserve the raw Yosys artifact, and sanitize only a safe structural copy
++    # in-place for OpenSTA compatibility.  This mirrors RTL-OPT calibration.
++    targets = STAGE_TARGETS[recipe.stage]
++    base_command = command[:-len(targets)] if targets else list(command)
++    synth_proc = None
++    if recipe.stage != "synth":
++        synth_command = [*base_command, "synth"]
++        metadata["synthesis_command"] = synth_command
++        metadata["synthesis_command_shell_display"] = shlex.join(synth_command)
++        synth_proc = subprocess.run(synth_command, cwd=str(flow_dir), text=True)
++        metadata["synthesis_returncode"] = synth_proc.returncode
++        netlist = (
++            flow_dir / "results" / recipe.platform / recipe.design_id / variant / "1_2_yosys.v"
++        )
++        raw_netlist = netlist.with_name("1_2_yosys.raw.v")
++        compat_meta = netlist.with_name("1_2_yosys_sta_compat.json")
++        metadata["synthesis_netlist"] = str(netlist)
++        metadata["synthesis_netlist_raw"] = str(raw_netlist)
++        if synth_proc.returncode != 0 or not netlist.is_file():
++            metadata["returncode"] = synth_proc.returncode or 1
++            metadata["stage_output_exists"] = False
++            metadata["ok"] = False
++            metadata["failure_reason"] = (
++                "synthesis_command_failed" if synth_proc.returncode != 0 else "synthesis_netlist_not_found"
++            )
++            write_metadata(out_meta, metadata)
++            raise CandidateFlowError(metadata["failure_reason"] + f"; metadata: {out_meta}")
++        try:
++            metadata["sta_netlist_compat"] = preserve_raw_and_sanitize(
++                netlist, raw_path=raw_netlist, metadata_path=compat_meta
++            )
++        except Exception as exc:
++            metadata["returncode"] = 1
++            metadata["stage_output_exists"] = False
++            metadata["ok"] = False
++            metadata["failure_reason"] = "sta_netlist_compat_failed"
++            metadata["sta_netlist_compat"] = {
++                "status": "failed", "reason": f"{type(exc).__name__}: {exc}"
++            }
++            write_metadata(out_meta, metadata)
++            raise CandidateFlowError(
++                f"candidate STA-netlist compatibility failed: {exc}; metadata: {out_meta}"
++            ) from exc
++
++    proc = subprocess.run(command, cwd=str(flow_dir), text=True)
+ 
+     metadata["returncode"] = proc.returncode
+-    metadata["stage_output_exists"] = (
+-        stage_json.is_file()
+-    )
++    metadata["stage_output_exists"] = stage_json.is_file()
+ 
+-    metadata["ok"] = bool(
+-        proc.returncode == 0
+-        and stage_json.is_file()
+-    )
++    metadata["ok"] = bool(proc.returncode == 0 and stage_json.is_file())
+ 
+     write_metadata(
+         out_meta,
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_batch.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_batch.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_batch.py	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_batch.py	2026-09-14 00:35:43.835185572 +0000
+@@ -0,0 +1,139 @@
++#!/usr/bin/env python3
++"""Fault-isolated multi-design wrapper for rtl-opt-groq.
++
++Each design runs in its own subprocess/output directory so one baseline/tool
++failure cannot terminate the rest of a benchmark sweep.  Resume is intentionally
++design-granular: completed designs are skipped; failed/incomplete designs can be
++archived and retried without destroying evidence.
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import shutil
++import subprocess
++import sys
++from datetime import datetime, timezone
++from pathlib import Path
++from typing import Any
++
++SCHEMA = "rtl_opt_batch/1"
++ROOT = Path(__file__).resolve().parents[1]
++RUNNER = ROOT / "timing_automation" / "run_rtl_opt_groq.py"
++
++
++def write_json(path: Path, value: Any) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    tmp = path.with_suffix(path.suffix + ".tmp")
++    tmp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
++    tmp.replace(path)
++
++
++def summary_status(directory: Path) -> tuple[bool, str | None]:
++    summary = directory / "groq_summary.json"
++    if not summary.is_file():
++        return False, None
++    try:
++        data = json.loads(summary.read_text())
++    except Exception:
++        return False, "corrupt_summary"
++    results = data.get("results") if isinstance(data, dict) else None
++    if not isinstance(results, list) or not results:
++        return False, "empty_summary"
++    statuses = [str(r.get("status") or "unknown") for r in results if isinstance(r, dict)]
++    # A summary is complete even if the design legitimately failed baseline or
++    # exhausted search; retry_failed controls whether such outcomes are rerun.
++    return True, statuses[-1] if statuses else "unknown"
++
++
++def archive_existing(path: Path) -> Path:
++    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
++    target = path.with_name(path.name + f".previous_{stamp}")
++    counter = 1
++    while target.exists():
++        target = path.with_name(path.name + f".previous_{stamp}_{counter}")
++        counter += 1
++    path.rename(target)
++    return target
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument("--output", type=Path, required=True)
++    ap.add_argument("--pairs", nargs="+", required=True)
++    ap.add_argument("--resume", action="store_true", help="skip completed design directories")
++    ap.add_argument("--retry-failed", action="store_true", help="archive and rerun completed non-success designs")
++    ap.add_argument("--max-design-runtime-min", type=float, default=0.0,
++                    help="subprocess wall-clock limit per design; 0 disables")
++    args, passthrough = ap.parse_known_args()
++    root = args.output.expanduser().resolve()
++    root.mkdir(parents=True, exist_ok=True)
++    state_path = root / "batch_state.json"
++    state = {
++        "schema": SCHEMA,
++        "pairs": list(args.pairs),
++        "results": {},
++        "passthrough_args": passthrough,
++    }
++    if state_path.is_file() and args.resume:
++        try:
++            old = json.loads(state_path.read_text())
++            if isinstance(old.get("results"), dict):
++                state["results"].update(old["results"])
++        except Exception:
++            pass
++    write_json(state_path, state)
++
++    timeout = args.max_design_runtime_min * 60 if args.max_design_runtime_min > 0 else None
++    overall_rc = 0
++    for pair in args.pairs:
++        design_dir = root / pair
++        complete, prior_status = summary_status(design_dir)
++        retryable_failure = complete and prior_status not in {"promoted", "converged", "max_attempts", "max_meaningful_iterations_reached"}
++        if complete and args.resume and not (args.retry_failed and retryable_failure):
++            state["results"][pair] = {"status": "skipped_completed", "prior_status": prior_status, "output": str(design_dir)}
++            write_json(state_path, state)
++            continue
++        if design_dir.exists():
++            if args.retry_failed or not complete:
++                archived = archive_existing(design_dir)
++            else:
++                raise SystemExit(f"output exists for {pair}: {design_dir}; use --resume or --retry-failed")
++        else:
++            archived = None
++
++        cmd = [sys.executable, str(RUNNER), "--output", str(design_dir), "--pairs", pair, *passthrough]
++        record = {"status": "running", "command": cmd, "output": str(design_dir)}
++        if archived is not None:
++            record["archived_previous"] = str(archived)
++        state["results"][pair] = record
++        write_json(state_path, state)
++        try:
++            proc = subprocess.run(cmd, cwd=str(ROOT), timeout=timeout, env=os.environ.copy())
++            complete, final_status = summary_status(design_dir)
++            record.update(
++                status="completed" if proc.returncode == 0 and complete else "failed",
++                returncode=proc.returncode,
++                final_status=final_status,
++            )
++            if proc.returncode != 0:
++                overall_rc = 1
++        except subprocess.TimeoutExpired:
++            record.update(status="design_timeout", timeout_seconds=timeout)
++            overall_rc = 1
++        except Exception as exc:
++            record.update(status="runner_exception", reason=f"{type(exc).__name__}: {exc}")
++            overall_rc = 1
++        write_json(state_path, state)
++
++    # Aggregate opportunistically; failure to aggregate must not erase run state.
++    aggregate = ROOT / "timing_automation" / "aggregate_results.py"
++    if aggregate.is_file():
++        subprocess.run([sys.executable, str(aggregate), "--root", str(root), "--output-prefix", str(root / "aggregate_results")], cwd=str(ROOT), check=False)
++    print(f"Batch results: {root}")
++    return overall_rc
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py	2026-09-13 22:35:50.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py	2026-09-14 00:41:19.239918291 +0000
+@@ -34,6 +34,7 @@
+ import calibrate_pairs_v3 as cal
+ from build_optimizer_input import normalize_transformation_family
+ from design_manifest import DesignManifest, VerificationPolicy
++from design_capabilities import analyze_design_capabilities
+ from latency_contract import build_latency_contract, latency_policy_for_prompt
+ from latency_verifier import cycle_exact_result, verify_fixed_latency
+ from evaluate_candidate import assess_guided_candidate
+@@ -70,7 +71,7 @@
+     return "sequential_equivalence" if pair["baseline"]["edge_signals"] else "combinational_cec"
+ 
+ 
+-def make_manifest(pair: Mapping[str, Any], directory: Path) -> DesignManifest:
++def make_manifest(pair: Mapping[str, Any], directory: Path, *, formal_timeout_s: int = 120) -> DesignManifest:
+     source = Path(pair["baseline"]["source"])
+     name = source.name
+     directory.mkdir(parents=True, exist_ok=True)
+@@ -84,7 +85,7 @@
+         source_files=[name],
+         language="verilog",
+         verification=VerificationPolicy(
+-            backend="yosys", mode=mode_for(pair), options={"timeout_s": 120}
++            backend="yosys", mode=mode_for(pair), options={"timeout_s": int(formal_timeout_s)}
+         ),
+         source_hashes={name: sha256(destination)},
+         metadata={"rtl_opt_pair_id": pair["id"], "candidate_source": "groq"},
+@@ -252,6 +253,7 @@
+     search_summary: Mapping[str, Any],
+     budgets: Mapping[str, Any],
+     latency_policy: Mapping[str, Any],
++    design_capabilities: Mapping[str, Any] | None = None,
+ ) -> dict[str, Any]:
+     golden_bundle = snapshot_bundle(golden_snapshot)
+     current_bundle = snapshot_bundle(current_best_snapshot)
+@@ -266,6 +268,7 @@
+         "guidance": guidance,
+         "user_ppa_budgets": dict(budgets),
+         "latency_policy": dict(latency_policy),
++        "design_capabilities": dict(design_capabilities or {}),
+         "golden": prompt_snapshot(golden_snapshot, include_text=True),
+         "current_best": prompt_snapshot(current_best_snapshot, include_text=not same, same_as_golden=same),
+         "previous_attempts": [dict(item) for item in history],
+@@ -321,7 +324,7 @@
+     return lines[start:start + 48] if start is not None else []
+ 
+ 
+-def select_baseline(pair: dict[str, Any], directory: Path):
++def select_baseline(pair: dict[str, Any], directory: Path, *, physical_timeout_s: int = 900):
+     pair = copy.deepcopy(pair)
+     pair["reference"] = copy.deepcopy(pair["baseline"])
+     formal_dir = directory / "baseline_elaboration"
+@@ -333,7 +336,7 @@
+     for period in TIMING_GRID_NS:
+         recipe, _unused, _profile = cal.freeze(pair, directory / f"baseline_{period:g}", module, period, "baseline_selection")
+         baseline = cal.physical(pair, directory / f"baseline_{period:g}", "baseline", recipe,
+-                                Path(pair["baseline"]["source"]), "baseline_selection")
++                                Path(pair["baseline"]["source"]), "baseline_selection", timeout_s=physical_timeout_s)
+         sweep.append({"period_ns": period, "run": baseline})
+         if cal.timing_clean(baseline):
+             evidence = {
+@@ -343,8 +346,18 @@
+                 "timing_grid_policy": "first golden-baseline setup/hold-clean period",
+             }
+             return {"module": module, "period_ns": period, "sweep": sweep, "run": baseline}, evidence
+-    return None, {"timing_grid_ns": list(TIMING_GRID_NS), "sweep": sweep,
+-                  "error": "no golden-baseline setup/hold-clean period"}
++    failure_reasons = {}
++    for item in sweep:
++        run = item.get("run") if isinstance(item, Mapping) else {}
++        if isinstance(run, Mapping) and run.get("status") != "passed":
++            reason = str(run.get("failure_reason") or "physical_stage_failed")
++            failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
++    return None, {
++        "timing_grid_ns": list(TIMING_GRID_NS),
++        "sweep": sweep,
++        "error": "golden_baseline_physical_flow_failed" if all((item.get("run") or {}).get("status") != "passed" for item in sweep) else "no golden-baseline setup/hold-clean period",
++        "failure_reasons": failure_reasons,
++    }
+ 
+ 
+ def user_budgets(args):
+@@ -358,9 +371,12 @@
+     try:
+         if run.get("status") != "passed":
+             raise ValueError("synthesis did not pass")
+-        netlist = Path(run["synthesis_netlist"])
++        # Implementation identity is derived from the raw Yosys synthesis
++        # artifact.  Any STA-compatibility copy is a parser workaround only and
++        # must never affect normalized-synthesis dedupe semantics.
++        netlist = Path(run.get("synthesis_netlist_raw") or run["synthesis_netlist"])
+         if not netlist.is_file():
+-            raise FileNotFoundError(f"synthesis netlist not found: {netlist}")
++            raise FileNotFoundError(f"raw synthesis netlist not found: {netlist}")
+         target = directory / f"{side}.synthesis.json"
+         script = directory / f"{side}.synthesis_hash.ys"
+         script.write_text(
+@@ -569,12 +585,37 @@
+     write_json(state / "current_best_snapshot.json", dict(current_best))
+ 
+ 
++def _write_run_checkpoint(directory: Path, checkpoint: Path, result: Mapping[str, Any]) -> None:
++    """Atomically persist the result plus a compact restart/forensics marker.
++
++    V1.4 exposes design-granular resume through rtl-opt-batch.  This marker makes
++    partial single-design runs unambiguous and prevents a half-written attempt
++    from being mistaken for completion.
++    """
++    write_json(checkpoint, result)
++    attempts = result.get("attempts") if isinstance(result.get("attempts"), list) else []
++    latest = attempts[-1] if attempts and isinstance(attempts[-1], Mapping) else {}
++    state = {
++        "schema": "rtl_opt_run_state/1",
++        "design": result.get("id"),
++        "status": result.get("status") or (latest.get("status") if latest else "running"),
++        "model_call_count": result.get("model_call_count", 0),
++        "meaningful_iteration_count": result.get("meaningful_iteration_count", 0),
++        "last_attempt": latest.get("attempt_number") or latest.get("attempt"),
++        "last_attempt_status": latest.get("status"),
++        "current_best_epoch": latest.get("current_best_epoch", 0) if latest else 0,
++        "checkpoint": str(checkpoint),
++        "resume_scope": "design_granular_via_rtl_opt_batch",
++    }
++    write_json(directory / "state" / "run_state.json", state)
++
++
+ def run_one(pair: dict[str, Any], output: Path, args: argparse.Namespace, baseline_data=None) -> dict[str, Any]:
+     pair = copy.deepcopy(pair)
+     directory = output / pair["id"]
+     directory.mkdir(parents=True, exist_ok=True)
+-    working_manifest = make_manifest(pair, directory)
+-    selected, golden_evidence = baseline_data if baseline_data is not None else select_baseline(pair, directory)
++    working_manifest = make_manifest(pair, directory, formal_timeout_s=args.formal_timeout_s)
++    selected, golden_evidence = baseline_data if baseline_data is not None else select_baseline(pair, directory, physical_timeout_s=args.ppa_timeout_s)
+     result = {
+         "schema": "groq_result/5",
+         "id": pair["id"],
+@@ -588,8 +629,12 @@
+     }
+     checkpoint = directory / "result.json"
+     if selected is None:
+-        result.update(status="no_baseline_feasible_period")
+-        write_json(checkpoint, result)
++        baseline_error = str((golden_evidence or {}).get("error") or "")
++        result.update(
++            status=("baseline_physical_flow_failed" if baseline_error == "golden_baseline_physical_flow_failed" else "no_baseline_feasible_period"),
++            rejection_reason=baseline_error or "baseline_unavailable",
++        )
++        _write_run_checkpoint(directory, checkpoint, result)
+         return result
+ 
+     latency_contract = build_latency_contract(
+@@ -598,6 +643,12 @@
+         max_latency_regression_cycles=args.max_latency_regression_cycles,
+     )
+     result["latency_contract"] = latency_contract.to_dict()
++    design_capabilities = analyze_design_capabilities(
++        pair=pair, manifest=working_manifest, base_dir=directory,
++        elaborated_module=selected["module"], latency_contract=latency_contract.to_dict(),
++    )
++    result["design_capabilities"] = design_capabilities
++    write_json(directory / "design_capabilities.json", design_capabilities)
+ 
+     state_root = directory / "state"
+     golden_snapshot = clone_bundle_snapshot(
+@@ -656,6 +707,7 @@
+         request = make_request(
+             golden_snapshot, current_best, current_best_evidence, guidance,
+             model_history, search_summary, user_budgets(args), active_latency_policy,
++            design_capabilities,
+         )
+         schema = json.loads(SCHEMA.read_text())
+         try:
+@@ -700,7 +752,7 @@
+             "meaningful_iteration_number": None,
+         }
+         result["attempts"].append(row)
+-        write_json(checkpoint, result)
++        _write_run_checkpoint(directory, checkpoint, result)
+ 
+         try:
+             row["groq_call_attempted"] = True
+@@ -728,7 +780,7 @@
+                 row["retry_feedback"] = feedback
+                 write_json(attempt_dir / "feedback.json", feedback)
+                 write_json(attempt_dir / "history.json", guided_attempt_record(row))
+-                write_json(checkpoint, result)
++                _write_run_checkpoint(directory, checkpoint, result)
+                 continue
+         except Exception as exc:
+             row.update(status="groq_failed", reason=f"{type(exc).__name__}: {exc}")
+@@ -736,7 +788,7 @@
+             row["retry_feedback"] = feedback
+             write_json(attempt_dir / "feedback.json", feedback)
+             write_json(attempt_dir / "history.json", guided_attempt_record(row))
+-            write_json(checkpoint, result)
++            _write_run_checkpoint(directory, checkpoint, result)
+             continue
+ 
+         try:
+@@ -953,9 +1005,9 @@
+             current_best_source = snapshot_primary_source(current_best)
+             row["ppa_comparison_reference"] = current_best["identity"]
+             synth_b = cal.physical(groq_pair, physical_dir, "baseline", recipe, current_best_source,
+-                                   f"attempt{attempt}", stage="synth")
++                                   f"attempt{attempt}", stage="synth", timeout_s=args.ppa_timeout_s)
+             synth_c = cal.physical(groq_pair, physical_dir, "reference", recipe, physical_candidate,
+-                                   f"attempt{attempt}", stage="synth")
++                                   f"attempt{attempt}", stage="synth", timeout_s=args.ppa_timeout_s)
+             bh = synthesis_hash(synth_b, physical_dir, "baseline")
+             ch = synthesis_hash(synth_c, physical_dir, "candidate")
+             row["synthesis"] = {"baseline": synth_b, "candidate": synth_c,
+@@ -1016,8 +1068,8 @@
+                 prior_impl.setdefault("duplicate_attempts", []).append(attempt)
+                 continue
+ 
+-            baseline = cal.physical(groq_pair, physical_dir, "baseline", recipe, current_best_source, f"attempt{attempt}")
+-            candidate = cal.physical(groq_pair, physical_dir, "reference", recipe, physical_candidate, f"attempt{attempt}")
++            baseline = cal.physical(groq_pair, physical_dir, "baseline", recipe, current_best_source, f"attempt{attempt}", timeout_s=args.ppa_timeout_s)
++            candidate = cal.physical(groq_pair, physical_dir, "reference", recipe, physical_candidate, f"attempt{attempt}", timeout_s=args.ppa_timeout_s)
+             promotion = assess_guided_candidate(
+                 baseline, candidate, proof, user_budgets(args),
+                 comparison_reference=current_best["identity"],
+@@ -1031,8 +1083,8 @@
+             )
+ 
+             if promotion["keep"]:
+-                rb = cal.physical(groq_pair, physical_dir, "baseline", recipe, current_best_source, f"attempt{attempt}", repeat=1)
+-                rc = cal.physical(groq_pair, physical_dir, "reference", recipe, physical_candidate, f"attempt{attempt}", repeat=1)
++                rb = cal.physical(groq_pair, physical_dir, "baseline", recipe, current_best_source, f"attempt{attempt}", repeat=1, timeout_s=args.ppa_timeout_s)
++                rc = cal.physical(groq_pair, physical_dir, "reference", recipe, physical_candidate, f"attempt{attempt}", repeat=1, timeout_s=args.ppa_timeout_s)
+                 repeat = assess_guided_candidate(
+                     rb, rc, proof, user_budgets(args),
+                     comparison_reference=current_best["identity"],
+@@ -1138,7 +1190,7 @@
+                 )
+                 if convergence is not None:
+                     result["convergence"] = convergence
+-            write_json(checkpoint, result)
++            _write_run_checkpoint(directory, checkpoint, result)
+ 
+         if result.get("convergence"):
+             break
+@@ -1164,7 +1216,7 @@
+     result.update(status=final_status, period_ns=selected["period_ns"])
+     from report_guided_experiment import aggregate
+     result["statistics"] = aggregate([result])
+-    write_json(checkpoint, result)
++    _write_run_checkpoint(directory, checkpoint, result)
+     return result
+ 
+ 
+@@ -1201,6 +1253,10 @@
+     ap.add_argument("--max-guidance-chars", type=int, default=6000)
+     ap.add_argument("--model-history-limit", type=int, default=5,
+                     help="maximum recent meaningful attempts sent verbatim to the model; older history is aggregated")
++    ap.add_argument("--formal-timeout-s", type=int, default=120,
++                    help="per temporal/cycle-exact formal invocation timeout in seconds")
++    ap.add_argument("--ppa-timeout-s", type=int, default=900,
++                    help="per ORFS synthesis/physical stage timeout in seconds")
+     ap.add_argument("--max-area-regression-pct", type=float, default=0.5)
+     ap.add_argument("--max-power-regression-pct", type=float, default=0.5)
+     ap.add_argument("--max-setup-slack-regression-ns", type=float, default=0.0)
+@@ -1217,7 +1273,7 @@
+     if args.max_meaningful_iterations is None:
+         args.max_meaningful_iterations = args.max_attempts
+     for name in ("max_attempts", "max_model_calls", "max_meaningful_iterations", "max_guidance_groups", "max_excerpts_per_group", "repetitions", "max_tokens",
+-                 "model_history_limit", "convergence_min_unique_syntheses"):
++                 "model_history_limit", "convergence_min_unique_syntheses", "formal_timeout_s", "ppa_timeout_s"):
+         if getattr(args, name) < 1:
+             ap.error(name.replace("_", "-") + " must be positive")
+     if args.convergence_duplicate_limit < 0:
+@@ -1264,7 +1320,8 @@
+     for repetition in range(1, args.repetitions + 1):
+         for pair in selected_pairs:
+             baseline_data = select_baseline(
+-                copy.deepcopy(pair), output / "baselines" / f"repetition_{repetition:02d}" / pair["id"]
++                copy.deepcopy(pair), output / "baselines" / f"repetition_{repetition:02d}" / pair["id"],
++                physical_timeout_s=args.ppa_timeout_s,
+             )
+             order = list(arms)
+             if repetition % 2 == 0:
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/sta_netlist_compat.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/sta_netlist_compat.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/sta_netlist_compat.py	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/sta_netlist_compat.py	2026-09-14 00:31:23.614618822 +0000
+@@ -0,0 +1,152 @@
++#!/usr/bin/env python3
++"""Auditable compatibility transforms for post-synthesis STA netlists.
++
++This module never edits source RTL.  It only operates on Yosys-emitted
++post-synthesis structural Verilog immediately before OpenSTA/OpenROAD consumes
++that netlist.  The original synthesis artifact is preserved separately and
++remains authoritative for normalized-synthesis hashing.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++import re
++import shutil
++from pathlib import Path
++from typing import Any, Mapping
++
++SCHEMA = "sta_netlist_compat/1"
++SIGNED_DECL_RE = re.compile(r"\b(input|output|inout|wire|reg)(\s+)signed\b")
++BEHAVIORAL_RE = re.compile(r"\b(always|always_ff|always_comb|always_latch|initial|case|casex|casez|function|task)\b")
++ASSIGN_RE = re.compile(r"\bassign\b(?P<expr>.*?);", re.S)
++# Operators whose interpretation can depend on signedness, width extension, or
++# expression semantics.  A mapped structural netlist should not need them.
++UNSAFE_ASSIGN_RE = re.compile(r"(?<![<>=!])(?:\*|/|\+|-(?!>)|>>>|<<<|>>|<<|<=|>=|<|>|\$signed\s*\(|\$unsigned\s*\()")
++
++
++class StaNetlistCompatError(RuntimeError):
++    pass
++
++
++def sha256_file(path: Path) -> str:
++    h = hashlib.sha256()
++    with Path(path).open("rb") as f:
++        for chunk in iter(lambda: f.read(1024 * 1024), b""):
++            h.update(chunk)
++    return h.hexdigest()
++
++
++def _strip_comments(text: str) -> str:
++    # Preserve line structure enough for diagnostics while ignoring attributes
++    # and comments during the conservative behavioral-safety scan.
++    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
++    text = re.sub(r"//[^\n]*", "", text)
++    return text
++
++
++def structural_safety_check(text: str) -> dict[str, Any]:
++    cleaned = _strip_comments(text)
++    behavioral = sorted(set(m.group(1) for m in BEHAVIORAL_RE.finditer(cleaned)))
++    unsafe_assigns: list[str] = []
++    for match in ASSIGN_RE.finditer(cleaned):
++        expr = match.group("expr")
++        if UNSAFE_ASSIGN_RE.search(expr):
++            compact = " ".join(expr.split())
++            unsafe_assigns.append(compact[:240])
++            if len(unsafe_assigns) >= 20:
++                break
++    return {
++        "safe": not behavioral and not unsafe_assigns,
++        "behavioral_constructs": behavioral,
++        "unsafe_assign_expressions": unsafe_assigns,
++    }
++
++
++def sanitize_text(text: str) -> tuple[str, dict[str, Any]]:
++    safety = structural_safety_check(text)
++    signed_count = len(SIGNED_DECL_RE.findall(text))
++    if signed_count and not safety["safe"]:
++        raise StaNetlistCompatError(
++            "refusing to remove signed declaration qualifiers from a netlist "
++            "that still contains behavioral/signed-sensitive expressions"
++        )
++    transformed, count = SIGNED_DECL_RE.subn(lambda m: f"{m.group(1)}{m.group(2)}", text)
++    return transformed, {
++        "safe_structural_netlist": bool(safety["safe"]),
++        "signed_declaration_qualifiers_removed": count,
++        "behavioral_constructs": safety["behavioral_constructs"],
++        "unsafe_assign_expressions": safety["unsafe_assign_expressions"],
++        "transformations": ["remove_signed_declaration_qualifiers"] if count else [],
++    }
++
++
++def sanitize_netlist(
++    input_path: Path,
++    output_path: Path,
++    *,
++    metadata_path: Path | None = None,
++) -> dict[str, Any]:
++    input_path = Path(input_path).resolve()
++    output_path = Path(output_path).resolve()
++    if not input_path.is_file():
++        raise FileNotFoundError(input_path)
++    original = input_path.read_text(encoding="utf-8", errors="strict")
++    transformed, details = sanitize_text(original)
++    output_path.parent.mkdir(parents=True, exist_ok=True)
++    # Atomic replace so an interruption cannot leave OpenSTA with a partial file.
++    tmp = output_path.with_name(output_path.name + ".tmp")
++    tmp.write_text(transformed, encoding="utf-8")
++    tmp.replace(output_path)
++    result: dict[str, Any] = {
++        "schema": SCHEMA,
++        "status": "passed",
++        "input_path": str(input_path),
++        "output_path": str(output_path),
++        "input_sha256": hashlib.sha256(original.encode("utf-8")).hexdigest(),
++        "output_sha256": sha256_file(output_path),
++        "applied": bool(details["transformations"]),
++        **details,
++    }
++    if metadata_path is not None:
++        metadata_path = Path(metadata_path)
++        metadata_path.parent.mkdir(parents=True, exist_ok=True)
++        metadata_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    return result
++
++
++def preserve_raw_and_sanitize(
++    synthesis_netlist: Path,
++    *,
++    raw_path: Path | None = None,
++    metadata_path: Path | None = None,
++) -> dict[str, Any]:
++    synthesis_netlist = Path(synthesis_netlist).resolve()
++    if raw_path is None:
++        raw_path = synthesis_netlist.with_name(synthesis_netlist.stem + ".raw" + synthesis_netlist.suffix)
++    raw_path = Path(raw_path).resolve()
++    raw_path.parent.mkdir(parents=True, exist_ok=True)
++    shutil.copy2(synthesis_netlist, raw_path)
++    result = sanitize_netlist(raw_path, synthesis_netlist, metadata_path=metadata_path)
++    result["raw_path"] = str(raw_path)
++    result["sta_path"] = str(synthesis_netlist)
++    return result
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument("input", type=Path)
++    ap.add_argument("output", type=Path)
++    ap.add_argument("--metadata", type=Path, default=None)
++    args = ap.parse_args()
++    try:
++        result = sanitize_netlist(args.input, args.output, metadata_path=args.metadata)
++    except Exception as exc:
++        print(json.dumps({"schema": SCHEMA, "status": "failed", "reason": f"{type(exc).__name__}: {exc}"}, indent=2))
++        return 1
++    print(json.dumps(result, indent=2, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/tests/test_robustness_v14.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/tests/test_robustness_v14.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/tests/test_robustness_v14.py	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/tests/test_robustness_v14.py	2026-09-14 00:39:20.453616552 +0000
+@@ -0,0 +1,132 @@
++import json
++from pathlib import Path
++
++from aggregate_results import collect
++from design_capabilities import analyze_design_capabilities
++from design_manifest import DesignManifest, VerificationPolicy
++from extract_candidate import ExtractedCandidate
++from lint_candidate import RequestScope, validate_candidate_against_request
++from run_rtl_opt_batch import summary_status
++
++
++def test_modern_model_self_checks_are_advisory():
++    source = b"module top(input a, output y); assign y=a; endmodule\n"
++    import hashlib
++    digest = hashlib.sha256(source).hexdigest()
++    candidate = ExtractedCandidate(
++        payload={"schema_version": "3.3", "decision": "propose_candidate", "target_unit_id": "whole_design", "self_checks": {"interface_unchanged": False}},
++        patches=(), patch_types=(), bundle_validated=True,
++        complete_sources={"top.v": source}, original_sources={"top.v": source},
++    )
++    scope = RequestScope(
++        unit_id="whole_design", optimizer_mode="guided", source_hashes={"top.v": digest},
++        module_to_file={"top": "top.v"}, primary_file="top.v", primary_module="top",
++        recommended_pattern_ids=(), recommended_focus_ranges=(),
++    )
++    checks, reasons = validate_candidate_against_request(candidate, scope, ())
++    assert checks["model_self_checks_advisory"] is True
++    assert checks["model_self_checks_all_true"] is False
++    assert not any("self_checks" in reason for reason in reasons)
++
++
++def test_design_capabilities_flags_signed_and_memory(tmp_path: Path):
++    src = tmp_path / "top.v"
++    src.write_text("module top(input clk,input signed [7:0] a, output [7:0] y); reg [7:0] mem [0:31]; assign y=mem[a[4:0]]; endmodule\n")
++    manifest = DesignManifest(
++        dataset="fixture", design_id="top", top="top", source_files=["top.v"], language="verilog",
++        verification=VerificationPolicy(backend="yosys", mode="sequential_equivalence", options={}),
++        source_hashes={"top.v": __import__('hashlib').sha256(src.read_bytes()).hexdigest()},
++    )
++    result = analyze_design_capabilities(
++        pair={"id": "top", "baseline": {"edge_signals": ["clk"]}, "timing_profile": {"clock_port": "clk"}},
++        manifest=manifest, base_dir=tmp_path, elaborated_module={},
++        latency_contract={"supported": True, "reason": None},
++    )
++    assert result["signed_top_ports_detected"] is True
++    assert result["contains_memory_or_register_array"] is True
++    assert result["expected_formal_complexity"] == "high"
++
++
++def test_aggregate_preserves_required_fields(tmp_path: Path):
++    d = tmp_path / "guided" / "repetition_01" / "demo"
++    d.mkdir(parents=True)
++    (d / "result.json").write_text(json.dumps({
++        "id": "demo",
++        "attempts": [{
++            "attempt_number": 1, "status": "promoted", "optimization_mode": "guided",
++            "groq_usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
++            "guidance": {"path_groups_sent_to_llm": 2},
++            "candidate_bundle_sha256": "abc", "formal": {"status": "passed"},
++            "latency_result": {"status": "verified", "verified_total_latency_regression_cycles": 1},
++            "ppa": {"candidate": {}}, "primary_transformation": "pipeline_insertion",
++            "proposed_transformations": ["pipeline_insertion"],
++        }]
++    }))
++    rows = collect(tmp_path)
++    assert len(rows) == 1
++    row = rows[0]
++    assert row["design"] == "demo"
++    assert row["prompt_tokens"] == 10
++    assert row["path_groups_considered"] == 2
++    assert row["formal_equivalence_result"] == "passed"
++    assert row["verified_latency_delta_cycles"] == 1
++
++
++def test_batch_summary_status(tmp_path: Path):
++    assert summary_status(tmp_path) == (False, None)
++    (tmp_path / "groq_summary.json").write_text(json.dumps({"results": [{"status": "converged"}]}))
++    assert summary_status(tmp_path) == (True, "converged")
++
++
++def test_calibration_physical_sanitizes_between_synth_and_grt(tmp_path: Path, monkeypatch):
++    import calibrate_pairs_v3 as cal
++
++    flow = tmp_path / "flow"
++    flow.mkdir()
++    monkeypatch.setattr(cal, "ROOT", flow)
++    src = tmp_path / "demo.v"
++    src.write_text("module demo(input signed [7:0] a, output [7:0] y); assign y=a; endmodule\n")
++    work = tmp_path / "work"
++    work.mkdir()
++    (work / "config.mk").write_text("# fixture\n")
++
++    class Recipe:
++        fingerprint_sha256 = "a" * 64
++        def verify_frozen_files(self):
++            return {"ok": True}
++
++    calls = []
++    def fake_run(cmd, log, timeout):
++        calls.append(list(cmd))
++        variant = next(x.split("=", 1)[1] for x in cmd if x.startswith("FLOW_VARIANT="))
++        result_dir = flow / "results" / "nangate45" / "rtlopt_demo" / variant
++        result_dir.mkdir(parents=True, exist_ok=True)
++        net = result_dir / "1_2_yosys.v"
++        if cmd[-1] == "synth":
++            net.write_text("module demo(a,y); input signed [7:0] a; output [7:0] y; BUF_X1 u(.A(a[0]),.Z(y[0])); endmodule\n")
++            return {"exit_code": 0, "status": "passed", "log": str(log)}
++        assert " signed " not in net.read_text()
++        metrics_dir = flow / "logs" / "nangate45" / "rtlopt_demo" / variant
++        metrics_dir.mkdir(parents=True, exist_ok=True)
++        (metrics_dir / "5_1_grt.json").write_text(json.dumps({
++            "globalroute__design__instance__area": 1.0,
++            "globalroute__power__total": 0.1,
++            "globalroute__timing__setup__ws": 0.01,
++            "globalroute__timing__hold__ws": 0.01,
++            "globalroute__timing__setup__tns": 0.0,
++            "globalroute__timing__hold__tns": 0.0,
++        }))
++        return {"exit_code": 0, "status": "passed", "log": str(log)}
++
++    monkeypatch.setattr(cal.v2, "run", fake_run)
++    result = cal.physical(
++        {"id": "demo"}, work, "baseline", Recipe(), src,
++        "fixture", stage="grt", timeout_s=10,
++    )
++    assert result["status"] == "passed"
++    assert result["sta_netlist_compat"]["applied"] is True
++    raw = Path(result["synthesis_netlist_raw"])
++    sta = Path(result["synthesis_netlist_sta"])
++    assert "signed" in raw.read_text()
++    assert " signed " not in sta.read_text()
++    assert [c[-1] for c in calls] == ["synth", "grt"]
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=ROBUSTNESS_V14_CHANGES.patch' /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/tests/test_sta_netlist_compat.py /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/tests/test_sta_netlist_compat.py
+--- /mnt/data/nebula_v13_work/phase5_to_9_groq_r3/timing_automation/tests/test_sta_netlist_compat.py	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/nebula_v14_work/phase5_to_9_groq_r3/timing_automation/tests/test_sta_netlist_compat.py	2026-09-14 00:31:23.618694899 +0000
+@@ -0,0 +1,39 @@
++from pathlib import Path
++
++import pytest
++
++from sta_netlist_compat import StaNetlistCompatError, preserve_raw_and_sanitize, sanitize_text
++
++
++def test_signed_structural_declarations_are_safely_removed():
++    text = """module m(a,b,y);\ninput signed [7:0] a;\ninput signed [7:0] b;\noutput signed [7:0] y;\nwire signed [7:0] y;\nBUF_X1 u0(.A(a[0]),.Z(y[0]));\nendmodule\n"""
++    out, info = sanitize_text(text)
++    assert " signed " not in out
++    assert info["signed_declaration_qualifiers_removed"] == 4
++    assert info["safe_structural_netlist"] is True
++
++
++def test_unsigned_structural_netlist_is_unchanged():
++    text = "module m(input [1:0] a, output [1:0] y);\nassign y = a;\nendmodule\n"
++    out, info = sanitize_text(text)
++    assert out == text
++    assert info["transformations"] == []
++
++
++def test_signed_behavioral_arithmetic_fails_closed():
++    text = """module m(input signed [7:0] a,b, output signed [7:0] y);\nassign y = a + b;\nendmodule\n"""
++    with pytest.raises(StaNetlistCompatError):
++        sanitize_text(text)
++
++
++def test_raw_and_sta_artifacts_are_preserved(tmp_path: Path):
++    net = tmp_path / "1_2_yosys.v"
++    net.write_text("module m(a,y); input signed [0:0] a; output [0:0] y; BUF_X1 u(.A(a),.Z(y)); endmodule\n")
++    meta = tmp_path / "compat.json"
++    result = preserve_raw_and_sanitize(net, metadata_path=meta)
++    raw = Path(result["raw_path"])
++    assert raw.is_file()
++    assert "signed" in raw.read_text()
++    assert "signed" not in net.read_text()
++    assert result["input_sha256"] != result["output_sha256"]
++    assert meta.is_file()

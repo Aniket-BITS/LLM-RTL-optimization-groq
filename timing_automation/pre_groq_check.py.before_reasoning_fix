@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Fail-closed preflight for the compact nEBULA Groq path."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+try:
+    from prompt_renderer import render_request_for_llm
+except ImportError:
+    from timing_automation.prompt_renderer import render_request_for_llm
+
+
+def load_json(path: Path):
+    v = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(v, dict):
+        raise RuntimeError(f"JSON root is not an object: {path}")
+    return v
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Validate nEBULA compact request immediately before Groq")
+    ap.add_argument("--request", required=True)
+    ap.add_argument("--run-optimizer", default="timing_automation/run_optimizer.py")
+    ap.add_argument("--response-schema", default="timing_automation/response_schema.json")
+    ap.add_argument("--completion-reserve", type=int, default=2048)
+    args = ap.parse_args()
+
+    try:
+        request_path = Path(args.request).expanduser().resolve()
+        run_optimizer = Path(args.run_optimizer).expanduser().resolve()
+        schema = Path(args.response_schema).expanduser().resolve()
+        request = load_json(request_path)
+
+        errors = []
+        warnings = []
+
+        if request.get("schema") != "optimizer_request/2":
+            errors.append("request schema is not optimizer_request/2")
+        if "prompt_user" in request or "prompt_system" in request:
+            errors.append("finished prompt fields are embedded in the structured request")
+
+        ranges = request.get("editable_line_ranges") or []
+        for a, b in zip(ranges, ranges[1:]):
+            if isinstance(a, list) and isinstance(b, list) and len(a) == len(b) == 2:
+                if b[0] <= a[1] + 1:
+                    errors.append(
+                        f"editable ranges are still overlapping/adjacent instead of merged: {a}, {b}"
+                    )
+
+        fixed = ((request.get("rendering_inputs") or {}).get("fixed_context") or {})
+        if not fixed.get("files"):
+            errors.append("no fixed-context files are referenced by the request")
+
+        if not run_optimizer.is_file():
+            errors.append(f"run_optimizer.py not found: {run_optimizer}")
+        else:
+            src = run_optimizer.read_text(encoding="utf-8")
+            if "nEBULA_PROMPT_V2_PATCH" not in src:
+                errors.append("run_optimizer.py has not been upgraded for deferred prompt rendering")
+            if 'reasoning_format="hidden"' not in src and "reasoning_format='hidden'" not in src:
+                errors.append("run_optimizer.py Groq transport is missing reasoning_format=hidden")
+            if "response_format={" in src or "response_format = {" in src:
+                errors.append("run_optimizer.py still contains Groq server-side response_format enforcement")
+
+        if not schema.is_file():
+            errors.append(f"response schema not found: {schema}")
+
+        if not os.environ.get("GROQ_API_KEY"):
+            warnings.append("GROQ_API_KEY is not set in this shell")
+        try:
+            import groq  # noqa: F401
+        except Exception:
+            warnings.append("Groq SDK is not importable in this Python environment")
+
+        rendered = None
+        if not errors:
+            rendered = render_request_for_llm(
+                request_path,
+                response_schema_override=schema,
+                completion_reserve_tokens=args.completion_reserve,
+            )
+
+        print("=" * 72)
+        print("nEBULA PRE-GROQ CHECK")
+        print("=" * 72)
+        print(f"Request       : {request_path}")
+        print(f"Ranges        : {ranges}")
+        print(f"Fixed files   : {len(fixed.get('files') or [])}")
+
+        if rendered is not None:
+            cb = rendered.context_budget
+            print(f"Input estimate: {cb['estimated_input_tokens']} tokens")
+            print(f"Output reserve: {cb['completion_reserve_tokens']} tokens")
+            print(f"Total estimate: {cb['estimated_total_with_completion_reserve']} tokens")
+            print(f"Soft / hard   : {cb['soft_input_token_target']} / {cb['hard_input_token_limit']}")
+            print(f"Model budget  : {cb['service_model_token_budget']}")
+            print(f"Compaction    : {'applied' if rendered.compaction_applied else 'not needed'}")
+            print(f"Cumulative    : {cb['cumulative_input_tokens_including_current_estimate']} tokens (diagnostic)")
+
+        if warnings:
+            print("Warnings:")
+            for w in warnings:
+                print("  -", w)
+        if errors:
+            print("FAILED:")
+            for e in errors:
+                print("  -", e)
+            return 2
+
+        print("PRE-GROQ READY: YES")
+        return 0
+    except Exception as exc:
+        print(f"PRE-GROQ READY: NO\nERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

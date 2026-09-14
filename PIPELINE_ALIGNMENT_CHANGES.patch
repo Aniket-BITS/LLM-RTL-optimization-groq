@@ -1,0 +1,53 @@
+--- /mnt/data/nebula_v12_ref/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py	2026-09-13 22:37:27.000000000 +0000
++++ timing_automation/prompt_renderer.py	2026-09-13 23:00:49.711184428 +0000
+@@ -105,8 +105,11 @@
+         "existing returned .v file. Preserve the top-level interface and parameters. Latency is a limited optimization "
+         "resource: prefer latency-neutral transformations when they are expected to provide comparable benefit, but you "
+         "may spend available latency whenever you judge the expected timing/PPA benefit justifies it. Pipeline insertion "
+-        "is available from the first attempt when headroom exists; there is no backend transform-order gate. Added or "
+-        "retimed state must use an existing permitted clock/reset domain; do not introduce clocks, clock domains, latches, "
++        "is available from the first attempt when headroom exists; there is no backend transform-order gate. When moving "
++        "or inserting a pipeline boundary, preserve transaction-cycle alignment for every downstream dependency: sibling "
++        "data/bypass paths, mux/select controls, enables, and other control or data signals crossing that boundary must be "
++        "delayed consistently. Do not pipeline only one branch while related downstream inputs remain from a different "
++        "cycle. Added or retimed state must use an existing permitted clock/reset domain; do not introduce clocks, clock domains, latches, "
+         "or change the external clock/reset contract. predicted_latency_change_cycles is advisory; backend proof is "
+         "authoritative. Describe intent with primary_transformation plus concrete proposed_transformations; do not use a "
+         "vague mixed label. Bottleneck locations "
+--- /mnt/data/nebula_v12_ref/phase5_to_9_groq_r3/timing_automation/tests/test_latency_verification.py	2026-09-13 22:35:50.000000000 +0000
++++ timing_automation/tests/test_latency_verification.py	2026-09-13 23:01:24.792984381 +0000
+@@ -261,3 +261,34 @@
+     )
+     assert "prep -flatten -top nebula_latency_harness" in script
+     assert "prep -top nebula_latency_harness\n" not in script
++
++
++def test_prompt_requires_cycle_alignment_for_pipeline_boundaries():
++    from prompt_renderer import render_groq_prompt
++    req = {
++        "unit_id": "whole_design",
++        "golden": {"source_bundle": {"top": "top", "files": []}},
++        "current_best": {"source_bundle": {"top": "top", "files": []}},
++        "editing_base_policy": {},
++        "candidate_contract": {},
++        "current_best_evidence": {},
++        "previous_attempts": [],
++        "latency_policy": {
++            "reference": "frozen_golden",
++            "max_latency_regression_cycles": 1,
++            "current_best_total_latency_regression_cycles": 0,
++            "remaining_latency_headroom_cycles": 1,
++            "model_prediction_authority": "advisory_only",
++        },
++        "guidance": {
++            "schema": "guidance_packet/1",
++            "mode_used": "exploratory",
++            "groups": [],
++            "recommendations": [],
++            "prior_attempt_outcomes": [],
++        },
++    }
++    system, _user, _packet, _budget = render_groq_prompt(req, schema={})
++    assert "preserve transaction-cycle alignment" in system
++    assert "mux/select controls" in system
++    assert "Do not pipeline only one branch" in system

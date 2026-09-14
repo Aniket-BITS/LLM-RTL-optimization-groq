@@ -1,0 +1,9 @@
+nEBULA cleanup applied: 2026-09-09
+Repository root: /home/aniket/OpenROAD-flow-scripts/flow
+
+Remaining backup-like files under timing_automation/:
+
+Git status after cleanup:
+ D timing_automation/nano
+?? cleanup_nebula.sh
+?? timing_automation/archive/

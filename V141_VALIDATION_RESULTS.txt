@@ -1,0 +1,43 @@
+nEBULA phase5_to_9_groq_r3 latency-aware V1.4.1 hotfix validation
+Date: 2026-09-14
+
+Scope
+-----
+Narrow ORFS handoff hotfix only. No Groq prompt, Golden/Current-Best, temporal
+formal relation, latency policy, synthesis-dedupe semantics, convergence policy,
+or PPA acceptance semantics were redesigned.
+
+Implemented
+-----------
+- Exact pre-OpenSTA ORFS target: <results-dir>/1_2_yosys.v
+- No use of phony `synth` as the Yosys interception point
+- Interception applies to synth, grt, and later physical stages
+- Raw artifact preserved as 1_2_yosys.raw.v
+- STA-facing copy remains 1_2_yosys.v
+- Compatibility metadata: 1_2_yosys_sta_compat.json
+- Idempotent raw preservation across synth -> grt reuse
+- Genuine Yosys rebuild refreshes raw authority
+- Failure taxonomy distinguishes:
+    yosys_synthesis_failed
+    synthesis_netlist_not_found
+    sta_netlist_compat_failed
+    synth_odb_failed
+    physical_stage_failed
+    stage_metrics_missing
+- Aggregate output exposes STA compatibility application and physical failure reason
+- Doctor validates presence of the ORFS $(RESULTS_DIR)/1_2_yosys.v rule
+
+Validation performed in assistant environment
+---------------------------------------------
+Python compilation: PASS
+Focused pytest suite: 74 passed, 14 skipped
+Top-level self-test: PASS
+Guided runner tests: 11/11 PASS
+Groq calls: NOT RUN
+Installed ORFS/Yosys/OpenROAD physical flow: NOT RUN
+
+Runtime acceptance still required locally
+-----------------------------------------
+The decisive local regression is RTL-OPT `mul`: the previous STA-0171 parse
+failure on `input signed [7:0] a;` must disappear, and the run directory should
+contain 1_2_yosys.raw.v plus 1_2_yosys_sta_compat.json before synth_odb starts.

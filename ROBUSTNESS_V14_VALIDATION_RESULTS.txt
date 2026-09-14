@@ -1,0 +1,26 @@
+phase5_to_9_groq_r3_latency_aware_v1_4 robustness validation
+Date: 2026-09-14
+
+Performed in assistant container (no live Groq/Yosys/OpenROAD project run claimed):
+- Python py_compile over timing_automation/*.py: PASS
+- pytest timing_automation/tests: 69 passed, 14 skipped
+- run_rtl_opt_groq.py --self-test: 11/11 PASS
+- top-level self_test.py: PASS
+- STA compatibility unit tests: PASS
+- mocked synthesis -> signed-netlist sanitize -> global-route handoff: PASS
+- design capability classification tests: PASS
+- aggregate CSV/JSON extraction tested against an existing 5-attempt V1.3 run: PASS
+
+Important runtime follow-up required locally:
+1. Confirm mul baseline passes the prior OpenSTA STA-0171 signed-declaration failure.
+2. Confirm saturating_add baseline passes the same compatibility point.
+3. Confirm adder V1.3 behavior is unchanged.
+4. Use rtl-opt-batch for fault-isolated multi-design validation.
+
+Architecture intentionally unchanged:
+- Golden is immutable formal/latency reference.
+- Current Best is promoted-only PPA reference.
+- LLM chooses transformation/editing base; backend owns truth.
+- Temporal fixed-cycle formal semantics unchanged.
+- Normalized synthesis dedupe uses RAW Yosys netlist, never STA-sanitized text.
+- EQY/SBY remain deferred.

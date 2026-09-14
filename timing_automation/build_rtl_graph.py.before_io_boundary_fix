@@ -1,0 +1,670 @@
+#!/usr/bin/env python3
+# new builder! new builder! new builder!
+
+from __future__ import annotations
+import argparse, json, subprocess, tempfile
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    from nebula_env import NebulaEnvError, yosys as resolve_nebula_yosys
+except ImportError:
+    from timing_automation.nebula_env import NebulaEnvError, yosys as resolve_nebula_yosys
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_FLOW_DIR = SCRIPT_DIR.parent
+
+SEQ = (
+    "$dff", "$adff", "$sdff", "$dffe", "$adffe", "$sdffe",
+    "$dffsr", "$dlatch", "$adlatch", "$sr"
+)
+
+
+def norm(x: Any) -> str:
+    s = str(x or "").strip()
+    return s[1:] if s.startswith("\\") else s
+
+
+def find_canonical_checkpoint(
+    flow_dir: Path,
+    platform: str,
+    design: str,
+    variant: str,
+) -> Path:
+
+    dirs = []
+
+    meta = flow_dir / "ai_runs" / f"{variant}.json"
+
+    if meta.exists():
+        try:
+            d = json.loads(meta.read_text()).get("result_dir")
+            if d:
+                dirs.append(Path(d))
+        except Exception:
+            pass
+
+    dirs.append(
+        flow_dir / "results" / platform / design / variant
+    )
+
+    checked = []
+
+    for d in dirs:
+
+        p = d / "1_1_yosys_canonicalize.rtlil"
+        checked.append(p)
+
+        if p.exists():
+            return p.resolve()
+
+        if d.exists():
+
+            matches = sorted(
+                d.glob("*yosys*canonicalize*.rtlil")
+            )
+
+            if matches:
+                return matches[0].resolve()
+
+    raise FileNotFoundError(
+        "Could not find 1_1_yosys_canonicalize.rtlil.\n"
+        "Checked:\n"
+        + "\n".join(f"  {p}" for p in checked)
+    )
+
+
+def find_yosys(
+    flow_dir: Path,
+    explicit: Optional[str] = None,
+) -> Path:
+    try:
+        return resolve_nebula_yosys(explicit, flow=flow_dir)
+    except NebulaEnvError as exc:
+        raise FileNotFoundError(str(exc)) from exc
+
+
+def quote(path: Path) -> str:
+
+    return (
+        '"'
+        + str(path)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        + '"'
+    )
+
+
+def src_list(
+    attrs: Dict[str, Any],
+) -> List[str]:
+
+    raw = (
+        attrs.get("src")
+        if isinstance(attrs, dict)
+        else None
+    )
+
+    if raw is None:
+        return []
+
+    out = []
+
+    for item in str(raw).split("|"):
+
+        item = item.strip()
+
+        if item and item not in out:
+            out.append(item)
+
+    return out
+
+
+def logical_names(
+    name: str,
+    info: Dict[str, Any],
+):
+
+    bits = list(
+        info.get("bits", [])
+    )
+
+    if not bits:
+        return []
+
+    base = norm(name)
+
+    if len(bits) == 1:
+        return [(base, bits[0])]
+
+    offset = int(
+        info.get("offset", 0)
+        or 0
+    )
+
+    upto = bool(
+        info.get("upto", 0)
+    )
+
+    out = []
+
+    width = len(bits)
+
+    for position, bit in enumerate(bits):
+
+        if upto:
+            index = offset + width - 1 - position
+        else:
+            index = offset + position
+
+        out.append(
+            (
+                f"{base}[{index}]",
+                bit,
+            )
+        )
+
+    return out
+
+
+def build_rtl_graph(
+    *,
+    flow_dir: Path,
+    platform: str,
+    design: str,
+    top: Optional[str] = None,
+    variant: str,
+    output_file: Optional[Path] = None,
+    checkpoint: Optional[Path] = None,
+    yosys_path: Optional[str] = None,
+) -> Tuple[Path, Dict[str, Any]]:
+
+    flow_dir = Path(
+        flow_dir
+    ).resolve()
+
+    # ``design`` is the ORFS / benchmark identity used for directory
+    # resolution. ``top`` is the actual Verilog/Yosys top module. They are
+    # identical for legacy designs, but external benchmark suites often use
+    # a different directory nickname.
+    rtl_top = str(top or design)
+
+    checkpoint = (
+        Path(checkpoint).resolve()
+
+        if checkpoint is not None
+
+        else find_canonical_checkpoint(
+            flow_dir,
+            platform,
+            design,
+            variant,
+        )
+    )
+
+    yosys = find_yosys(
+        flow_dir,
+        yosys_path,
+    )
+
+    output_file = (
+        Path(output_file).resolve()
+
+        if output_file is not None
+
+        else (
+            flow_dir
+            / "ai_runs"
+            / f"{variant}_rtl_graph.json"
+        ).resolve()
+    )
+
+    output_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with tempfile.NamedTemporaryFile(
+        suffix=".json",
+        delete=False,
+    ) as handle:
+
+        json_path = Path(
+            handle.name
+        )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".ys",
+        delete=False,
+    ) as handle:
+
+        script_path = Path(
+            handle.name
+        )
+
+        handle.write(
+            "\n".join(
+                [
+                    f"read_rtlil {quote(checkpoint)}",
+                    f"hierarchy -check -top {rtl_top}",
+                    "proc",
+                    "flatten",
+                    "opt_clean",
+                    f"write_json {quote(json_path)}",
+                ]
+            )
+        )
+
+    try:
+
+        result = subprocess.run(
+            [
+                str(yosys),
+                "-Q",
+                "-s",
+                str(script_path),
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        if result.returncode != 0:
+
+            tail = "\n".join(
+                (result.stdout or "").splitlines()[-80:]
+            )
+
+            raise RuntimeError(
+                "Yosys graph build failed:\n"
+                + tail
+            )
+
+        raw = json.loads(
+            json_path.read_text()
+        )
+
+    finally:
+
+        for path in (
+            script_path,
+            json_path,
+        ):
+
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    modules = (
+        raw.get("modules")
+        or {}
+    )
+
+    if rtl_top in modules:
+
+        module_name = rtl_top
+        module = modules[rtl_top]
+
+    else:
+
+        matches = [
+            (name, module)
+
+            for name, module
+            in modules.items()
+
+            if norm(name) == norm(rtl_top)
+        ]
+
+        if matches:
+
+            module_name, module = matches[0]
+
+        elif len(modules) == 1:
+
+            module_name = next(
+                iter(modules)
+            )
+
+            module = modules[
+                module_name
+            ]
+
+        else:
+
+            raise KeyError(
+                f"Top module '{rtl_top}' "
+                "not found in Yosys JSON."
+            )
+
+    signal_bits = {}
+    bit_names = {}
+
+    for name, info in (
+        module.get("netnames")
+        or {}
+    ).items():
+
+        clean_name = norm(name)
+
+        bits = list(
+            info.get("bits", [])
+        )
+
+        if not clean_name or not bits:
+            continue
+
+        signal_bits.setdefault(
+            clean_name,
+            bits,
+        )
+
+        for logical_name, bit in logical_names(
+            clean_name,
+            info,
+        ):
+
+            signal_bits.setdefault(
+                logical_name,
+                [bit],
+            )
+
+            if isinstance(bit, int):
+
+                bit_names.setdefault(
+                    str(bit),
+                    [],
+                ).append(
+                    logical_name
+                )
+
+        if (
+            len(bits) == 1
+            and isinstance(bits[0], int)
+        ):
+
+            bit_names.setdefault(
+                str(bits[0]),
+                [],
+            ).append(
+                clean_name
+            )
+
+    cells = {}
+
+    for raw_name, cell in (
+        module.get("cells")
+        or {}
+    ).items():
+
+        name = norm(
+            raw_name
+        )
+
+        cell_type = norm(
+            cell.get("type")
+        )
+
+        directions = {
+            norm(port): direction
+
+            for port, direction
+            in (
+                cell.get("port_directions")
+                or {}
+            ).items()
+        }
+
+        connections = {
+            norm(port): list(bits)
+
+            for port, bits
+            in (
+                cell.get("connections")
+                or {}
+            ).items()
+        }
+
+        inputs = []
+        outputs = []
+
+        for port, bits in connections.items():
+
+            signal_bits_only = [
+                int(bit)
+
+                for bit in bits
+
+                if isinstance(bit, int)
+            ]
+
+            direction = directions.get(
+                port
+            )
+
+            if direction in (
+                "input",
+                "inout",
+            ):
+
+                inputs += signal_bits_only
+
+            if direction in (
+                "output",
+                "inout",
+            ):
+
+                outputs += signal_bits_only
+
+        cells[name] = {
+
+            "name": name,
+
+            "type": cell_type,
+
+            "sequential": (
+                cell_type
+                .lower()
+                .startswith(SEQ)
+            ),
+
+            "port_directions": directions,
+
+            "connections": connections,
+
+            "parameters": dict(
+                cell.get("parameters")
+                or {}
+            ),
+
+            "input_bits": sorted(
+                set(inputs)
+            ),
+
+            "output_bits": sorted(
+                set(outputs)
+            ),
+
+            "src": src_list(
+                cell.get("attributes")
+                or {}
+            ),
+        }
+
+    for key, names in list(
+        bit_names.items()
+    ):
+
+        bit_names[key] = sorted(
+            set(names)
+        )
+
+    graph = {
+
+        "schema_version": 2,
+
+        "graph_semantics": (
+            "Pre-ABC bit-level structural graph."
+        ),
+
+        "module": norm(
+            module_name
+        ),
+
+        "design": design,
+
+        "rtl_top": norm(module_name),
+
+        "platform": platform,
+
+        "flow_variant": variant,
+
+        "source_checkpoint": str(
+            checkpoint
+        ),
+
+        "yosys_executable": str(
+            yosys
+        ),
+
+        "signal_bits": signal_bits,
+
+        "bit_names": bit_names,
+
+        "cells": cells,
+
+        "summary": {
+
+            "cell_count": len(
+                cells
+            ),
+
+            "sequential_cell_count": sum(
+                1
+                for cell in cells.values()
+                if cell["sequential"]
+            ),
+
+            "combinational_cell_count": sum(
+                1
+                for cell in cells.values()
+                if not cell["sequential"]
+            ),
+
+            "cells_with_src": sum(
+                1
+                for cell in cells.values()
+                if cell["src"]
+            ),
+
+            "named_signal_count": len(
+                signal_bits
+            ),
+        },
+    }
+
+    output_file.write_text(
+        json.dumps(
+            graph,
+            indent=2,
+        )
+    )
+
+    return (
+        output_file,
+        graph,
+    )
+
+
+def main():
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--variant",
+        required=True,
+    )
+
+    parser.add_argument(
+        "--design",
+        default="timing_demo",
+    )
+
+    parser.add_argument(
+        "--top",
+        default=None,
+        help=(
+            "Actual RTL/Yosys top module. Defaults to --design for "
+            "backward compatibility."
+        ),
+    )
+
+    parser.add_argument(
+        "--platform",
+        default="nangate45",
+    )
+
+    parser.add_argument(
+        "--flow-dir",
+        default=str(DEFAULT_FLOW_DIR),
+    )
+
+    parser.add_argument(
+        "--checkpoint"
+    )
+
+    parser.add_argument(
+        "--yosys"
+    )
+
+    parser.add_argument(
+        "--output"
+    )
+
+    args = parser.parse_args()
+
+    output, graph = build_rtl_graph(
+
+        flow_dir=Path(
+            args.flow_dir
+        ),
+
+        platform=args.platform,
+
+        design=args.design,
+
+        top=args.top or args.design,
+
+        variant=args.variant,
+
+        output_file=(
+            Path(args.output)
+            if args.output
+            else None
+        ),
+
+        checkpoint=(
+            Path(args.checkpoint)
+            if args.checkpoint
+            else None
+        ),
+
+        yosys_path=args.yosys,
+    )
+
+    print(
+        f"Graph JSON: {output}"
+    )
+
+    print(
+        json.dumps(
+            graph["summary"],
+            indent=2,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()

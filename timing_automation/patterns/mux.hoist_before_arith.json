@@ -1,0 +1,37 @@
+{
+  "id": "mux.hoist_before_arith",
+  "name": "Hoist mux ahead of arithmetic",
+  "family": "mux_restructuring",
+  "applies_when": {
+    "class": [
+      "muxing",
+      "arithmetic"
+    ],
+    "pattern_in": [
+      "adder_followed_by_mux",
+      "mux_selection"
+    ],
+    "requires_flags": [
+      "allow_mux_restructuring"
+    ]
+  },
+  "latency_effect": "preserves",
+  "sec_recipe": "equiv_make+equiv_induct",
+  "template": "When a select chooses between an arithmetic result and a cheaper expression, move the selection so the expensive arithmetic is not both computed and then muxed on the critical path. Select operands (or restructure so the mux feeds, not follows, the adder) when it shortens the path without changing the function.",
+  "example": {
+    "before": "wire [W-1:0] t = a + b; assign y = sel ? t : c;",
+    "after": "assign y = sel ? (a + b) : c;  // keep semantics identical; restructure only if it removes the add from the mux-dominated critical path"
+  },
+  "guardrails": [
+    "Preserve the exact selection semantics (which output is chosen for each sel value).",
+    "Do not speculate arithmetic that changes X/overflow behavior visible at the output.",
+    "No latency change; ports and clocked block frozen."
+  ],
+  "version": "1.0.0",
+  "target_operator_roles": [
+    "$mux",
+    "$add",
+    "$sub"
+  ],
+  "expected_equivalence_class": "combinational_same_latency"
+}

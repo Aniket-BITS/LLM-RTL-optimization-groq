@@ -1,0 +1,2133 @@
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/CLI_HELP.txt nebula_latency_impl/phase5_to_9_groq_r3/CLI_HELP.txt
+--- nebula_latency_base/phase5_to_9_groq_r3/CLI_HELP.txt	2026-09-13 16:25:28.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/CLI_HELP.txt	2026-09-13 21:13:02.847812221 +0000
+@@ -3,6 +3,9 @@
+                            [--reasoning-effort {low,medium,high}]
+                            [--temperature TEMPERATURE]
+                            [--max-attempts MAX_ATTEMPTS]
++                           [--max-model-calls MAX_MODEL_CALLS]
++                           [--max-meaningful-iterations MAX_MEANINGFUL_ITERATIONS]
++                           [--max-latency-regression-cycles MAX_LATENCY_REGRESSION_CYCLES]
+                            [--convergence-duplicate-limit CONVERGENCE_DUPLICATE_LIMIT]
+                            [--convergence-min-unique-syntheses CONVERGENCE_MIN_UNIQUE_SYNTHESES]
+                            [--optimizer-mode {auto,guided,exploratory}]
+@@ -17,36 +20,47 @@
+                            [--experiment {single,paired-guidance}]
+                            [--repetitions REPETITIONS] [--self-test]
+ 
+-Pre-freeze Groq RTL optimizer. GOLDEN is immutable and is always the formal
+-reference. CURRENT BEST starts as Golden and changes only after repeat-confirmed
+-promotion. The model chooses one editing base (golden or current_best), while
+-formal always compares Candidate vs Golden and PPA always compares Candidate vs
+-the unchanged Current-Best snapshot at the start of that attempt.
+-
+-A candidate identical to Golden, Current Best, or a previous candidate is hard
+-rejected before formal. The prompt prohibits comment/formatting-only rewrites;
+-source-different hardware no-ops remain backend-owned through normalized synthesis hashing;
+-repeated rejected synthesized implementations skip OpenROAD PPA.
+-
+-The model may return no_further_optimization, but this is advisory. Backend
+-convergence evidence decides whether the design actually stops.
++Run Groq-generated RTL optimization with immutable Golden and promoted Current
++Best. Core architecture: * GOLDEN is immutable and is always the formal
++correctness reference. * CURRENT BEST starts as Golden and changes only after
++repeat-confirmed promotion. * The model chooses one editing base (golden or
++current_best) for each candidate. * Exact/source-only duplicates are rejected
++before formal. * Normalized synthesis equivalence remains backend-
++authoritative and skips PPA. * PPA always compares the candidate against the
++unchanged Current Best snapshot. * A model no_further_optimization response is
++advisory; backend convergence owns stop. Latency-changing/pipelining
++verification is policy-controlled. Budget zero preserves the validated cycle-
++exact path; positive budgets enable backend-proven fixed-cycle temporal
++equivalence against frozen Golden before synthesis/PPA.
+ 
+ options:
+-  -h, --help
+-  --output OUTPUT
+-  --pairs [PAIRS ...]
++  -h, --help            show this help message and exit
++  --output OUTPUT       new immutable run directory (default: timestamp plus
++                        unique ID)
++  --pairs [PAIRS ...]   RTL-OPT pair ids; defaults to the first ten corpus
++                        entries
+   --model MODEL
+   --max-tokens MAX_TOKENS
+   --reasoning-effort {low,medium,high}
+   --temperature TEMPERATURE
+   --max-attempts MAX_ATTEMPTS
++                        backward-compatible default for model-call and
++                        meaningful-iteration limits
++  --max-model-calls MAX_MODEL_CALLS
++                        hard cap on provider/model invocations; defaults to
++                        --max-attempts
++  --max-meaningful-iterations MAX_MEANINGFUL_ITERATIONS
++                        cap on novel structurally valid candidates reaching
++                        semantic verification; defaults to --max-attempts
++  --max-latency-regression-cycles MAX_LATENCY_REGRESSION_CYCLES
++                        maximum backend-verified total latency regression from
++                        frozen Golden; 0 preserves cycle-exact behavior
+   --convergence-duplicate-limit CONVERGENCE_DUPLICATE_LIMIT
+-                        automatic early-stop duplicate-hit threshold after enough
+-                        distinct rejected syntheses in the active Current-Best epoch;
+-                        0 disables automatic convergence
++                        early-stop duplicate-hit threshold after enough unique
++                        rejected syntheses; 0 disables
+   --convergence-min-unique-syntheses CONVERGENCE_MIN_UNIQUE_SYNTHESES
+-                        minimum distinct comparable rejected synthesized
+-                        implementations required in the active Current-Best epoch
++                        minimum distinct comparable rejected syntheses in the
++                        current-best epoch before convergence can stop
+   --optimizer-mode {auto,guided,exploratory}
+   --guidance-source {timing-report}
+   --max-guidance-groups MAX_GUIDANCE_GROUPS
+@@ -55,13 +69,7 @@
+   --max-area-regression-pct MAX_AREA_REGRESSION_PCT
+   --max-power-regression-pct MAX_POWER_REGRESSION_PCT
+   --max-setup-slack-regression-ns MAX_SETUP_SLACK_REGRESSION_NS
+-                        maximum permitted setup-slack loss in ns; default 0
+   --max-hold-slack-regression-ns MAX_HOLD_SLACK_REGRESSION_NS
+-                        maximum permitted hold-slack loss in ns; default 0
+   --experiment {single,paired-guidance}
+   --repetitions REPETITIONS
+   --self-test
+-
+-Latency-changing/pipelining verification is intentionally not implemented in
+-this pre-freeze version. The candidate contract still requires cycle-visible
+-latency to remain unchanged.
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/LATENCY_VALIDATION_RESULTS.txt nebula_latency_impl/phase5_to_9_groq_r3/LATENCY_VALIDATION_RESULTS.txt
+--- nebula_latency_base/phase5_to_9_groq_r3/LATENCY_VALIDATION_RESULTS.txt	1970-01-01 00:00:00.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/LATENCY_VALIDATION_RESULTS.txt	2026-09-13 21:20:42.575440195 +0000
+@@ -0,0 +1,35 @@
++nEBULA latency-aware v1 packaging validation
++Date: 2026-09-14
++
++[1] py_compile
++PASS
++
++[2] response schema Draft 2020-12 validation
++PASS timing_automation/response_schema_latency.json
++PASS timing_automation/response_schema_prefreeze.json
++PASS timing_automation/response_schema.json
++
++[3] focused pytest
++...........................                                              [100%]
++27 passed in 1.18s
++
++[4] runner self-test
++test_bounded_slack_regression (test_guided_rtl_opt.PolicyTests.test_bounded_slack_regression) ... ok
++test_current_best_reference_is_recorded (test_guided_rtl_opt.PolicyTests.test_current_best_reference_is_recorded) ... ok
++test_compact_history_hides_raw_hash (test_guided_rtl_opt.PromptAndHistoryTests.test_compact_history_hides_raw_hash) ... ok
++test_infrastructure_does_not_reject_family (test_guided_rtl_opt.PromptAndHistoryTests.test_infrastructure_does_not_reject_family) ... ok
++test_prompt_roles_and_authority (test_guided_rtl_opt.PromptAndHistoryTests.test_prompt_roles_and_authority) ... ok
++test_aggregate_tracks_duplicate_and_stop_types (test_guided_rtl_opt.ReportTests.test_aggregate_tracks_duplicate_and_stop_types) ... ok
++test_convergence_is_current_best_epoch_scoped (test_guided_rtl_opt.SynthesisAndConvergenceTests.test_convergence_is_current_best_epoch_scoped) ... ok
++test_model_stop_needs_backend_evidence (test_guided_rtl_opt.SynthesisAndConvergenceTests.test_model_stop_needs_backend_evidence) ... ok
++test_normalized_hash_and_noop (test_guided_rtl_opt.SynthesisAndConvergenceTests.test_normalized_hash_and_noop) ... ok
++
++----------------------------------------------------------------------
++Ran 9 tests in 0.001s
++
++OK
++
++[5] environment capability
++Yosys: NOT PRESENT in packaging container
++GROQ_API_KEY: NOT PRESENT in packaging container
++No live Groq/Yosys/OpenROAD latency run performed here.
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/OPERATING_COMMANDS.md nebula_latency_impl/phase5_to_9_groq_r3/OPERATING_COMMANDS.md
+--- nebula_latency_base/phase5_to_9_groq_r3/OPERATING_COMMANDS.md	2026-09-13 16:20:54.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/OPERATING_COMMANDS.md	2026-09-13 21:20:35.416919853 +0000
+@@ -1,4 +1,4 @@
+-# Operating Groq r3 — pre-freeze Golden / Current-Best architecture
++# Operating Groq r3 — latency-aware Golden / Current-Best architecture
+ 
+ Run commands from:
+ 
+@@ -45,14 +45,47 @@
+ accepts that stop recommendation when backend convergence evidence supports it.
+ Automatic convergence is independently enforced by the configured thresholds.
+ 
++## Latency-changing / pipelining policy
++
++`--max-latency-regression-cycles 0` is the backward-compatible default and keeps
++the existing cycle-exact formal path. A positive value enables the phase-1
++latency verifier: one existing reference clock, unchanged top interface, and one
++backend-proven non-negative fixed cycle shift for the complete design. The model
++may predict latency and declare pipeline/retiming intent, but those fields are
++advisory. Nebula independently proves the Candidate-vs-Golden temporal relation
++before synthesis or PPA. New clocks, clock domains, latches, and changed external
++clock/reset behavior remain deterministic lint failures.
++
++Total latency regression is always measured from frozen Golden. PPA remains
++Candidate versus the unchanged Current Best at attempt start, so latency cannot
++creep across promotions. Variable-latency protocols, CDC latency changes, and
++multi-clock latency-changing transformations are intentionally unsupported in
++this phase. If a positive budget is requested for an unsupported design, Nebula
++advertises zero effective latency headroom and safely falls back to the existing
++cycle-exact formal path so ordinary same-cycle optimizations can still proceed.
++
++Use separate retry budgets when desired:
++
++```text
++--max-model-calls N             hard provider-call cap
++--max-meaningful-iterations M   novel structurally valid candidates reaching semantic verification
++```
++
++Provider failures, truncation, malformed responses, exact source duplicates, and
++deterministic materialization/lint failures do not consume the meaningful
++iteration budget. `--max-attempts` remains the backward-compatible default for
++both limits when the two explicit flags are omitted.
++
+ ## Recommended guided run
+ 
+ ```bash
+ ./nebula.sh rtl-opt-groq \
+   --output "$PWD/ai_runs/prefreeze_eval_01" \
+   --pairs comparator_16bit fsm_encode mul_const calculation adder_carry \
+-  --max-attempts 5 \
++  --max-model-calls 8 \
++  --max-meaningful-iterations 5 \
+   --optimizer-mode guided \
++  --max-latency-regression-cycles 0 \
+   --max-setup-slack-regression-ns 0.010 \
+   --max-hold-slack-regression-ns 0.010 \
+   --convergence-min-unique-syntheses 2 \
+@@ -64,6 +97,23 @@
+ are positive maximum losses; `0.010` means up to 10 ps regression is permitted.
+ Absolute timing-clean checks remain mandatory.
+ 
++To permit a one-cycle pipeline regression from Golden on an eligible sequential
++design, use for example:
++
++```bash
++./nebula.sh rtl-opt-groq \
++  --output "$PWD/ai_runs/latency_adder_01" \
++  --pairs adder \
++  --max-model-calls 8 \
++  --max-meaningful-iterations 5 \
++  --optimizer-mode guided \
++  --max-latency-regression-cycles 1 \
++  --max-setup-slack-regression-ns 0.010 \
++  --max-hold-slack-regression-ns 0.010 \
++  --convergence-min-unique-syntheses 2 \
++  --convergence-duplicate-limit 2
++```
++
+ ## Convergence
+ 
+ Automatic convergence is scoped to the active Current-Best epoch. With defaults,
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/README_GROQ.md nebula_latency_impl/phase5_to_9_groq_r3/README_GROQ.md
+--- nebula_latency_base/phase5_to_9_groq_r3/README_GROQ.md	2026-09-13 16:25:28.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/README_GROQ.md	2026-09-13 21:16:28.725518160 +0000
+@@ -13,7 +13,7 @@
+ 
+ Guidance is advisory. It never gates source validation, Groq, formal equivalence, or physical evaluation. A graph-builder timeout is recorded as failed guidance. Only exact source hashes and complete trusted source regions qualify as mapping evidence. Reconvergent cones without resolved attribution remain exploratory. Classification is structural evidence, not proof that one RTL operator causes the physical delay. No carry-preservation, subtraction-avoidance, or design-ID-based architecture rules are added.
+ 
+-Each design selects a setup/hold-clean baseline clock period. The first diagnosis comes from that selected run. Every comparable candidate PPA run produces the next diagnosis, including a rejected candidate. That diagnosis carries its candidate source identity; candidate source line numbers are not golden-source line numbers. Attempts still propose complete replacements against the immutable golden SourceBundle. Without a new comparable PPA result, the latest identified measured implementation remains the diagnosis.
++Each design selects a setup/hold-clean baseline clock period. The first diagnosis comes from that selected run. Guidance is always regenerated from the promoted-only CURRENT BEST snapshot; a rejected candidate never becomes the next diagnosis/PPA base. The model may construct one complete-source candidate from either GOLDEN or CURRENT BEST, but formal remains anchored to GOLDEN and physical comparison remains anchored to the unchanged CURRENT BEST snapshot at attempt start.
+ 
+ The exact system/user prompt, full and compact guidance, source identity, budget decisions, retry outcomes, and measured deltas are saved per attempt. Timing reports are parsed by the existing parser; the existing RTL graph mapper and classifier supply evidence. The old raw report excerpt is retained only in baseline diagnostic artifacts and is excluded from prompts.
+ 
+@@ -37,10 +37,10 @@
+ 
+ See `OPERATING_COMMANDS.md` for commands and artifacts, and `VALIDATION.md` for review notes and known limits.
+ 
+-## Pre-freeze Golden / Current-Best optimizer semantics
++## Latency-aware Golden / Current-Best optimizer semantics
+ 
+-`rtl-opt-groq` now uses `timing_automation/response_schema_prefreeze.json` and
+-keeps the shared legacy `response_schema.json` unchanged for other entry points.
++`rtl-opt-groq` now uses `timing_automation/response_schema_latency.json` (schema 3.2) and
++keeps both the shared legacy `response_schema.json` and prior pre-freeze schema unchanged for other/replay entry points.
+ 
+ For this runner:
+ 
+@@ -54,4 +54,4 @@
+ - Rejected candidates never become the diagnosis/PPA base.
+ - Promotion creates a new Current-Best epoch and optimization continues while attempts remain.
+ - `no_further_optimization` is a legal advisory model response; backend convergence owns termination.
+-- Latency-changing/pipelining formal verification is intentionally deferred until after this core is frozen.
++- Fixed-cycle latency-changing/pipelining verification is available through `rtl-opt-groq` with `--max-latency-regression-cycles N`. Budget `0` preserves the old cycle-exact path; positive budgets use backend temporal formal against frozen Golden before PPA. Phase-1 is intentionally limited to one existing reference clock and one design-level non-negative cycle shift.
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/VALIDATION.md nebula_latency_impl/phase5_to_9_groq_r3/VALIDATION.md
+--- nebula_latency_base/phase5_to_9_groq_r3/VALIDATION.md	2026-09-13 18:20:07.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/VALIDATION.md	2026-09-13 21:20:35.417475414 +0000
+@@ -1,6 +1,21 @@
++# Latency-aware extension validation
++
++This package extends the previously validated immutable-Golden/promoted-Current-Best optimizer with phase-1 fixed-cycle latency verification, advisory model latency intent, Golden-relative latency budgets, meaningful-iteration accounting, and formal-result classification.
++
++Validation performed in this packaging environment:
++
++- `py_compile` on the modified/new Python modules: PASS.
++- Draft 2020-12 parsing/validation of the dedicated latency response schema: PASS.
++- Focused pure-Python regression set covering latency contract/policy, prediction-as-hint behavior, over-budget equivalence, clock-edge handling, Current-Best iteration behavior, and guided optimizer fixtures: 27 passed.
++- No live Groq request, Yosys temporal proof, synthesis, or OpenROAD PPA was executed in this container because the project EDA installation/API configuration is not present here. The generated temporal proof flow must therefore receive one local end-to-end Yosys/OpenROAD validation before this latency feature is considered empirically frozen.
++
++The default `--max-latency-regression-cycles 0` deliberately preserves the previously exercised cycle-exact path.
++
++---
++
+ # Pre-freeze Golden / Current-Best patch validation
+ 
+-This package adds the pre-latency optimizer-core architecture: immutable Golden, promoted-only Current Best, model-selected editing base, exact SourceBundle duplicate rejection, backend-authoritative synthesis dedupe/convergence, advisory `no_further_optimization`, formal-to-Golden, and PPA-to-Current-Best. Latency-changing/pipelining support is intentionally deferred.
++The historical pre-latency package established the optimizer-core architecture: immutable Golden, promoted-only Current Best, model-selected editing base, exact SourceBundle duplicate rejection, backend-authoritative synthesis dedupe/convergence, advisory `no_further_optimization`, formal-to-Golden, and PPA-to-Current-Best. The current package extends that frozen core with the latency-aware phase described above.
+ 
+ For **this pre-freeze patch**, validation performed by the assistant was static only:
+ 
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/VERSION.json nebula_latency_impl/phase5_to_9_groq_r3/VERSION.json
+--- nebula_latency_base/phase5_to_9_groq_r3/VERSION.json	2026-09-13 18:20:07.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/VERSION.json	2026-09-13 21:21:06.341546656 +0000
+@@ -9,6 +9,9 @@
+     "exact_source_duplicate_backend_gate": true,
+     "formal_reference": "golden",
+     "golden_immutable": true,
++    "latency_prediction_backend_authority": true,
++    "latency_reference": "golden",
++    "meaningful_iteration_budget": true,
+     "model_editing_base_selection": [
+       "golden",
+       "current_best"
+@@ -23,62 +26,83 @@
+     "OPERATING_COMMANDS.md",
+     "README_GROQ.md",
+     "VALIDATION.md",
+-    "self_test.py",
+-    "timing_automation/calibrate_pairs_v3.py",
+     "timing_automation/evaluate_candidate.py",
+     "timing_automation/extract_candidate.py",
+-    "timing_automation/guidance_packet.py",
+-    "timing_automation/lint_candidate.py",
+     "timing_automation/optimizer_history.py",
+     "timing_automation/prompt_renderer.py",
+     "timing_automation/report_guided_experiment.py",
+-    "timing_automation/run_optimizer.py",
+-    "timing_automation/run_rtl_opt_groq.py",
+-    "timing_automation/source_bundle.py",
+-    "timing_automation/test_guided_rtl_opt.py",
+-    "timing_automation/tests/test_complete_verilog.py",
+-    "timing_automation/tests/test_current_best_iteration.py",
+-    "timing_automation/yosys_structure.py"
++    "timing_automation/run_rtl_opt_groq.py"
+   ],
+   "created_files": [
+-    "timing_automation/response_schema_prefreeze.json",
+-    "timing_automation/tests/test_current_best_iteration.py"
++    "timing_automation/latency_contract.py",
++    "timing_automation/latency_verifier.py",
++    "timing_automation/response_schema_latency.json",
++    "timing_automation/tests/test_latency_verification.py",
++    "LATENCY_VALIDATION_RESULTS.txt",
++    "LATENCY_AWARE_CHANGES.patch"
+   ],
+-  "created_utc_date": "2026-09-13",
++  "created_utc_date": "2026-09-14",
+   "default_optimizer_mode": "auto",
+-  "derived_from": "phase5_to_9_groq_r3",
++  "derived_from": "phase5_to_9_groq_r3_prefreeze_freeze_candidate_6500_guided_source_fix",
+   "guidance_schema": "guidance_packet/1",
+   "latency_changing_support": {
+-    "cycle_visible_latency_required_unchanged": true,
+-    "implemented": false,
+-    "status": "explicitly_deferred_until_after_optimizer_core_freeze"
++    "default_max_latency_regression_cycles": 0,
++    "implemented": true,
++    "phase_1_scope": "single existing top-level reference clock; unchanged top interface; fixed cycle shift",
++    "ppa_reference": "current_best",
++    "prediction_authority": "advisory_only",
++    "reference": "frozen_golden",
++    "unsupported": [
++      "variable-latency protocols",
++      "CDC latency changes",
++      "multi-clock latency-changing transformations",
++      "per-output independent latency"
++    ],
++    "verification": "backend-proven fixed nonnegative design-level cycle shift"
+   },
+   "legacy_shared_response_schema_version": "3.0",
+   "new_file_sha256": {
+-    "CLI_HELP.txt": "53824978bed6354391d2df90c593b6e81b9a8031d4709a36e60000f6f709f24f",
+-    "OPERATING_COMMANDS.md": "37f51e06e72aba0d5ba32241bb342ea96f6eea6be698b7aff2b84f71cb25f7ca",
+-    "README_GROQ.md": "80573049885fe0407fac0665042e088743b9aae97898c3b7e98ab13ece30762e",
+-    "VALIDATION.md": "13d029175e79c4ec3ffa511c843feb0c4ddf12880c55c3d9ecc0fb33db1fddd4",
++    "CLI_HELP.txt": "481fab9e3eb88303fc4b0078437f8ad325a24f2dd4b980247981311227ae36cb",
++    "LATENCY_VALIDATION_RESULTS.txt": "111f65ce9a684afdebdd477d282215ee091ceb20518f120751c36c1ec15e7837",
++    "OPERATING_COMMANDS.md": "f0fe5216016b9b243e62494fca2f04c35399015c5de1649732ab67af121bd052",
++    "README_GROQ.md": "c283d999d47588b3cdbad1a16038524605854e074bdabaa2e45275628e2e0a98",
++    "VALIDATION.md": "59302e85db69adeaf1ff867695a06d675f04fb368f19b1b60cd410e5931eac59",
+     "self_test.py": "66d7017ee4bdb915d166d719873763d822936f83083038af64ee1842ccb34655",
+     "timing_automation/calibrate_pairs_v3.py": "a85c48a282e5b27857a2e22b2ffeea4243f1ee8f14340ae1c1d83a86e41b33d6",
+-    "timing_automation/evaluate_candidate.py": "346548d79e758a5355c8ea21de5eabc8d2ca3eb93ac088bb13be1c5900b1310d",
+-    "timing_automation/extract_candidate.py": "7bb2a523f545a507cd4cab4dbf63f9c7983814ecc6173a1c46da976d9fc52913",
++    "timing_automation/evaluate_candidate.py": "0ac8498a510b95bb85e76f944b0d359bd099ed38427ac2d24c47930ef61c9d1d",
++    "timing_automation/extract_candidate.py": "051e3fca85b5244b66d3a6f5b775fc59708423822ef22e21d21a3ef3a094eb75",
+     "timing_automation/guidance_packet.py": "0e5a57ff2af274bad9393b91bcd3564916738525b87aa5df99f33106a2211197",
++    "timing_automation/latency_contract.py": "73c129923935d344d4bd3fd232f86b0c9198966f76526c557ddffcb693255683",
++    "timing_automation/latency_verifier.py": "a8d7b931d84febd2d14c683d16fdfc66b5cbaeeb98ffc6af933badee76dacd48",
+     "timing_automation/lint_candidate.py": "5fce430c69bb879c313e9b9b382b9b2bd5c43d5cd156a7b8a917398b04f4e07b",
+-    "timing_automation/optimizer_history.py": "ea27da1016f21c7e2814c1f219c91fc0a36e6b61456dcf0599468cc48c38ffce",
+-    "timing_automation/prompt_renderer.py": "87a8a7cceccb436e350136143dddb1dc22729d927ae597836249a9eed7c5b612",
+-    "timing_automation/report_guided_experiment.py": "d41cde9d849c68213005468163c131b4b42ee2a6768a5476b0b77669bcf2308e",
++    "timing_automation/optimizer_history.py": "9fc3b4e7c24539540990836eb67f16eee89be43010d1030d7afae9db40a5dccb",
++    "timing_automation/prompt_renderer.py": "7f92fb36c0205cd2a70ba5162118cfeea6e8c7f6a3b1ba4bb4d5429a02d6db9d",
++    "timing_automation/report_guided_experiment.py": "1df7d2fe46436e0645851760ec62aa923fd685f9b37c3f87abfaa023d1aa5f7f",
++    "timing_automation/response_schema_latency.json": "75ca77c5002a989a370d1d80f1794271866d8417fd91d273f0263ce90a274660",
+     "timing_automation/response_schema_prefreeze.json": "b57abe316200f11818bc4bed35ffaab4dd70c222164db9751c0433a28a4d1746",
+     "timing_automation/run_optimizer.py": "1de91e0ef8b9392922a66833c7ca54ded8cbded47dab10748784b928cd671132",
+-    "timing_automation/run_rtl_opt_groq.py": "9085871aa8af2cbbc8230efa0263e2f2a1804dbe9aa9c79463a523e647fe954b",
++    "timing_automation/run_rtl_opt_groq.py": "964166a01b236848d50f867113a6a99050c1aa1b32ae8d10e7655092d7438133",
+     "timing_automation/source_bundle.py": "44b99f5b460cf87ced74b9cc8caa3f74113cf0f86cdd82bc1cd885add124cb07",
+     "timing_automation/test_guided_rtl_opt.py": "f661da6e819f11c532a544046d7c59a23a07981e91663c71651697185d1721e3",
+     "timing_automation/tests/test_complete_verilog.py": "1343b4d715c248218be0884c58ab7cdfd68896fa0b913b9c59bec0120c117feb",
+     "timing_automation/tests/test_current_best_iteration.py": "e188cc1dc50c9b8ea49134506d5a1c40be3165f76d08ead3e465ba3e73c1664d",
++    "timing_automation/tests/test_latency_verification.py": "8a1da8015f7d3674069736e1f626cb39f5b32bfe2a41ca71aeafbc703e4cd225",
+     "timing_automation/yosys_structure.py": "66e600a351df52dc5d3f81e1a5c4ac72ba4be768b849ceb18499a47f3a258da1"
+   },
+   "old_run_outputs_copied": false,
+   "optimizer_core_freeze_candidate": true,
++  "optimizer_robustness_extensions": {
++    "formal_result_taxonomy": [
++      "passed",
++      "no_allowed_latency_relation",
++      "inconclusive_timeout",
++      "tool_failure",
++      "unsupported_contract",
++      "latency_budget_exceeded"
++    ],
++    "meaningful_iteration_accounting": true,
++    "separate_model_call_cap": true
++  },
+   "original_versions_preserved": true,
+   "prefreeze_guided_source_provenance_fix": {
+     "implemented": true,
+@@ -108,10 +132,10 @@
+     "validation": "static only; no project tests, Groq, Yosys, formal, synthesis, OpenROAD or PPA run by assistant"
+   },
+   "provider": "groq",
+-  "response_schema_version": "3.1",
+-  "result_schema": "groq_result/4",
++  "response_schema_version": "3.2",
++  "result_schema": "groq_result/5",
+   "rtl_opt_groq_default_max_tokens": 6500,
+-  "rtl_opt_groq_response_schema": "timing_automation/response_schema_prefreeze.json",
++  "rtl_opt_groq_response_schema": "timing_automation/response_schema_latency.json",
+   "shared_local_dependencies": [
+     "existing Python environment / .venv",
+     "private environment configuration",
+@@ -140,15 +164,16 @@
+     "timing_automation/yosys_structure.py": "e4b3eb7f948233dbe98d47900e61bcec3476369c488cd9fa3825c326793abdf7"
+   },
+   "validation": {
++    "focused_pytest": "27 passed",
+     "json_schema_draft_2020_12_validation": "passed",
+     "live_groq_run": false,
+     "modified_python_py_compile": "passed",
+-    "note": "Static Python/schema validation only after identity-echo fix. No project/EDA/model tests were run by the assistant; user runtime rerun required.",
++    "note": "Pure-Python/static validation only in packaging container; local ORFS/Yosys/Groq end-to-end latency validation is still required.",
+     "openroad_ppa_run": false,
+-    "project_tests_run": false,
++    "runner_self_test": "9 passed",
+     "static_invariant_audit": "passed",
+     "synthesis_run": false,
+-    "yosys_lint_or_formal_run": false
++    "yosys_temporal_formal_run": false
+   },
+-  "version": "phase5_to_9_groq_r3_prefreeze_current_best_identity_fix"
++  "version": "phase5_to_9_groq_r3_latency_aware_v1"
+ }
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/timing_automation/evaluate_candidate.py nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/evaluate_candidate.py
+--- nebula_latency_base/phase5_to_9_groq_r3/timing_automation/evaluate_candidate.py	2026-09-13 16:12:42.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/evaluate_candidate.py	2026-09-13 21:07:05.866408628 +0000
+@@ -728,10 +728,13 @@
+     return reasons
+ 
+ 
+-def assess_guided_candidate(baseline, candidate, proof, budgets, comparison_reference=None):
++def assess_guided_candidate(baseline, candidate, proof, budgets, comparison_reference=None, latency_result=None):
+     """Measured same-recipe gate against the immutable Current-Best snapshot."""
+     result = {"keep": False, "comparable": False, "budgets": dict(budgets),
+-              "comparison_reference": comparison_reference}
++              "comparison_reference": comparison_reference,
++              "latency": dict(latency_result or {})}
++    if latency_result is not None and not bool(latency_result.get("passed")):
++        return {**result, "reason": "latency_policy_failed"}
+     if proof.get("status") != "passed":
+         return {**result, "reason": "not_proven"}
+     if any(run.get("status") != "passed" for run in (baseline, candidate)):
+@@ -754,6 +757,7 @@
+               "setup_budget": deltas["setup_slack_delta_ns"] >= -budgets["max_setup_slack_regression_ns"],
+               "hold_budget": deltas["hold_slack_delta_ns"] >= -budgets["max_hold_slack_regression_ns"],
+               "timing_clean": all(m[k] >= 0 for m in (b, c) for k in keys[2:]),
++              "latency_budget": True if latency_result is None else bool(latency_result.get("passed")),
+               "measurable_improvement": (c["area_um2"] <= .99 * b["area_um2"] or
+                                          c["power_w"] <= .99 * b["power_w"] or
+                                          deltas["setup_slack_delta_ns"] >= .01)}
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/timing_automation/extract_candidate.py nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/extract_candidate.py
+--- nebula_latency_base/phase5_to_9_groq_r3/timing_automation/extract_candidate.py	2026-09-13 18:03:44.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/extract_candidate.py	2026-09-13 21:15:59.315542342 +0000
+@@ -1276,13 +1276,15 @@
+ 
+ def validate_prefreeze_payload(payload: Mapping[str, Any]) -> None:
+     from jsonschema import Draft202012Validator
+-    schema = json.loads((SCRIPT_DIR / "response_schema_prefreeze.json").read_text())
++    version = payload.get("schema_version")
++    schema_name = "response_schema_latency.json" if version == "3.2" else "response_schema_prefreeze.json"
++    schema = json.loads((SCRIPT_DIR / schema_name).read_text())
+     errors = sorted(Draft202012Validator(schema).iter_errors(payload), key=lambda e: list(e.path))
+     if errors:
+         error = errors[0]
+         location = ".".join(str(part) for part in error.path)
+         prefix = f" at {location}" if location else ""
+-        raise CandidateSchemaError("schema-3.1 response" + prefix + ": " + error.message)
++        raise CandidateSchemaError(f"schema-{payload.get('schema_version')} response" + prefix + ": " + error.message)
+ 
+ 
+ def extract_complete_sources(payload, bundle):
+@@ -1320,13 +1322,13 @@
+     *,
+     bundle: SourceBundle | None = None,
+ ) -> ExtractedCandidate | StopRecommendation:
+-    """Parse one schema-3.1 optimizer decision.
++    """Parse one schema-3.1/3.2 optimizer decision.
+ 
+     Candidate responses are validated against the selected editing-base bundle.
+     Stop recommendations contain no RTL and are intentionally advisory.
+     """
+     payload = extract_json_response(raw_text)
+-    if payload.get("schema_version") == "3.1":
++    if payload.get("schema_version") in {"3.1", "3.2"}:
+         validate_prefreeze_payload(payload)
+         if payload.get("decision") == "no_further_optimization":
+             return StopRecommendation(payload=dict(payload))
+@@ -1343,7 +1345,7 @@
+     """Extract and validate one materializable candidate response."""
+     validate_response_schema_file()
+     payload = extract_json_response(raw_text)
+-    if payload.get("schema_version") == "3.1":
++    if payload.get("schema_version") in {"3.1", "3.2"}:
+         validate_prefreeze_payload(payload)
+         if payload.get("decision") != "propose_candidate":
+             raise CandidateSchemaError("no_further_optimization is not a materializable candidate")
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/timing_automation/latency_contract.py nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/latency_contract.py
+--- nebula_latency_base/phase5_to_9_groq_r3/timing_automation/latency_contract.py	1970-01-01 00:00:00.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/latency_contract.py	2026-09-13 21:20:09.790300815 +0000
+@@ -0,0 +1,263 @@
++#!/usr/bin/env python3
++"""Fixed-cycle latency contract construction for nEBULA RTL optimization.
++
++Phase-1 scope is deliberately narrow and auditable:
++  * one existing reference clock,
++  * unchanged top-level interface,
++  * fixed non-negative integer output shift relative to frozen Golden,
++  * optional known reset driven identically into Golden and Candidate,
++  * no CDC / variable-latency / transaction protocol semantics.
++
++The LLM never defines this contract.  It is derived from backend design metadata.
++"""
++from __future__ import annotations
++
++from dataclasses import asdict, dataclass
++from pathlib import Path
++import re
++from typing import Any, Mapping
++
++try:
++    from design_manifest import DesignManifest
++except ImportError:  # pragma: no cover
++    from timing_automation.design_manifest import DesignManifest
++
++
++RESET_NAMES = ("rst_n", "reset", "rst", "clear")
++
++
++@dataclass(frozen=True)
++class LatencyContract:
++    schema: str = "nebula_latency_contract/2"
++    supported: bool = False
++    reason: str | None = None
++    verification_mode: str = "fixed_cycle_shift"
++    reference_clock: str | None = None
++    clock_edge: str = "posedge"
++    reset_port: str | None = None
++    reset_active_level: int | None = None
++    reset_asynchronous: bool | None = None
++    initial_reset_cycles: int = 1
++    golden_latency_regression_reference_cycles: int = 0
++    max_latency_regression_cycles: int = 0
++    diagnostic_extra_cycles: int = 1
++    one_design_level_shift: bool = True
++
++    def to_dict(self) -> dict[str, Any]:
++        return asdict(self)
++
++
++def _source_text(manifest: DesignManifest, base_dir: Path) -> str:
++    parts: list[str] = []
++    for path in manifest.resolved_source_files(base_dir):
++        try:
++            parts.append(path.read_text(encoding="utf-8", errors="replace"))
++        except OSError:
++            pass
++    return "\n".join(parts)
++
++
++
++
++def _port_width(port: Mapping[str, Any]) -> int | None:
++    bits = port.get("bits") if isinstance(port, Mapping) else None
++    return len(bits) if isinstance(bits, list) and bits else None
++
++
++def _infer_clock_edge(manifest: DesignManifest, base_dir: Path, clock_port: str) -> tuple[str | None, str | None]:
++    """Return (edge, error). Phase-1 supports one unambiguous edge only."""
++    text = _source_text(manifest, base_dir)
++    pattern = re.compile(
++        r"\balways(?:_ff)?\s*@\s*\([^)]*\b(posedge|negedge)\s+"
++        + re.escape(clock_port) + r"\b",
++        flags=re.I | re.S,
++    )
++    edges = {m.group(1).lower() for m in pattern.finditer(text)}
++    if len(edges) == 1:
++        return next(iter(edges)), None
++    if not edges:
++        return None, f"could not infer an active edge for reference clock {clock_port!r}"
++    return None, f"reference clock {clock_port!r} is used on multiple active edges"
++
++
++def _infer_reset(
++    manifest: DesignManifest,
++    base_dir: Path,
++    ports: Mapping[str, Any],
++) -> tuple[str | None, int | None, bool | None]:
++    # Canonical manifest metadata wins when exactly one reset is defined.
++    if len(manifest.resets) == 1:
++        reset = manifest.resets[0]
++        if reset.port in ports:
++            return reset.port, int(reset.active_level), bool(reset.asynchronous)
++    if len(manifest.resets) > 1:
++        return None, None, None
++
++    candidates = [name for name in RESET_NAMES if name in ports]
++    if len(candidates) != 1:
++        return None, None, None
++    name = candidates[0]
++    active = 0 if name.endswith("_n") else 1
++    text = _source_text(manifest, base_dir)
++    async_re = re.compile(
++        r"always\s*@\s*\([^)]*(?:posedge|negedge)\s+" + re.escape(name) + r"\b",
++        flags=re.I | re.S,
++    )
++    return name, active, bool(async_re.search(text))
++
++
++def build_latency_contract(
++    *,
++    pair: Mapping[str, Any],
++    manifest: DesignManifest,
++    base_dir: Path,
++    elaborated_module: Mapping[str, Any],
++    max_latency_regression_cycles: int,
++) -> LatencyContract:
++    """Derive the trusted phase-1 temporal contract from backend metadata."""
++    if isinstance(max_latency_regression_cycles, bool) or not isinstance(max_latency_regression_cycles, int):
++        raise ValueError("max_latency_regression_cycles must be an integer")
++    if max_latency_regression_cycles < 0:
++        raise ValueError("max_latency_regression_cycles must be nonnegative")
++
++    ports = elaborated_module.get("ports") if isinstance(elaborated_module, Mapping) else None
++    if not isinstance(ports, Mapping) or not ports:
++        return LatencyContract(
++            supported=False,
++            reason="elaborated top-module ports unavailable",
++            max_latency_regression_cycles=max_latency_regression_cycles,
++        )
++
++    # Budget zero deliberately preserves the already-validated cycle-exact path,
++    # including combinational designs that have no clock at all.
++    if max_latency_regression_cycles == 0:
++        profile = pair.get("timing_profile") if isinstance(pair.get("timing_profile"), Mapping) else {}
++        clock = manifest.clocks[0].port if len(manifest.clocks) == 1 and not manifest.clocks[0].virtual else profile.get("clock_port")
++        return LatencyContract(
++            supported=True, reason=None, verification_mode="cycle_exact_existing",
++            reference_clock=clock if isinstance(clock, str) and clock else None,
++            max_latency_regression_cycles=0, diagnostic_extra_cycles=0,
++        )
++
++    # Prefer canonical manifest clocks.  RTL-OPT currently carries the reference
++    # clock explicitly in timing_profile, so use that as the dataset adapter fallback.
++    clock_port: str | None = None
++    if len(manifest.clocks) == 1 and not manifest.clocks[0].virtual:
++        clock_port = manifest.clocks[0].port
++    elif len(manifest.clocks) > 1:
++        return LatencyContract(
++            supported=False,
++            reason="phase-1 latency verification supports exactly one reference clock",
++            max_latency_regression_cycles=max_latency_regression_cycles,
++        )
++    else:
++        profile = pair.get("timing_profile") if isinstance(pair.get("timing_profile"), Mapping) else {}
++        raw = profile.get("clock_port")
++        if isinstance(raw, str) and raw:
++            clock_port = raw
++
++    if not clock_port:
++        return LatencyContract(
++            supported=False,
++            reason="design has no backend-declared reference clock; pipelining would require a new clock contract",
++            max_latency_regression_cycles=max_latency_regression_cycles,
++        )
++    if clock_port not in ports or ports[clock_port].get("direction") != "input":
++        return LatencyContract(
++            supported=False,
++            reason=f"reference clock {clock_port!r} is not a top-level input",
++            reference_clock=clock_port,
++            max_latency_regression_cycles=max_latency_regression_cycles,
++        )
++
++    if _port_width(ports[clock_port]) != 1:
++        return LatencyContract(
++            supported=False,
++            reason=f"reference clock {clock_port!r} must be one bit",
++            reference_clock=clock_port,
++            max_latency_regression_cycles=max_latency_regression_cycles,
++        )
++
++    clock_edge, clock_edge_error = _infer_clock_edge(manifest, base_dir, clock_port)
++    if clock_edge_error is not None:
++        return LatencyContract(
++            supported=False,
++            reason=clock_edge_error,
++            reference_clock=clock_port,
++            max_latency_regression_cycles=max_latency_regression_cycles,
++        )
++
++    reset_port, reset_active_level, reset_async = _infer_reset(manifest, base_dir, ports)
++
++    # cal.v2.elaborate already rejects generated/multiple clock domains for this
++    # RTL-OPT runner. Keep an explicit guard here because latency verification is
++    # a stronger claim than ordinary same-cycle SEC. A known reset edge is not a
++    # clock domain and is excluded from this check.
++    edge_signals = set(pair.get("baseline", {}).get("edge_signals") or [])
++    reset_edges = set(RESET_NAMES)
++    if reset_port:
++        reset_edges.add(reset_port)
++    non_reset_edges = {x for x in edge_signals if x not in reset_edges}
++    if non_reset_edges and non_reset_edges != {clock_port}:
++        return LatencyContract(
++            supported=False,
++            reason="phase-1 latency verification does not support multiple/generated clock edges",
++            reference_clock=clock_port,
++            clock_edge=clock_edge or "posedge",
++            max_latency_regression_cycles=max_latency_regression_cycles,
++        )
++
++    if reset_port is not None and _port_width(ports[reset_port]) != 1:
++        return LatencyContract(
++            supported=False,
++            reason=f"reset {reset_port!r} must be one bit for phase-1 latency verification",
++            reference_clock=clock_port,
++            clock_edge=clock_edge or "posedge",
++            max_latency_regression_cycles=max_latency_regression_cycles,
++        )
++    # Multiple reset-like ports are intentionally unsupported rather than guessed.
++    reset_like = [name for name in RESET_NAMES if name in ports]
++    if not manifest.resets and len(reset_like) > 1:
++        return LatencyContract(
++            supported=False,
++            reason="multiple reset-like top-level inputs require an explicit manifest reset contract",
++            reference_clock=clock_port,
++            max_latency_regression_cycles=max_latency_regression_cycles,
++        )
++
++    return LatencyContract(
++        supported=True,
++        reason=None,
++        reference_clock=clock_port,
++        clock_edge=clock_edge or "posedge",
++        reset_port=reset_port,
++        reset_active_level=reset_active_level,
++        reset_asynchronous=reset_async,
++        initial_reset_cycles=1,
++        golden_latency_regression_reference_cycles=0,
++        max_latency_regression_cycles=max_latency_regression_cycles,
++        diagnostic_extra_cycles=1,
++    )
++
++
++def latency_policy_for_prompt(
++    contract: LatencyContract,
++    *,
++    current_best_total_latency_regression_cycles: int,
++) -> dict[str, Any]:
++    current = int(current_best_total_latency_regression_cycles)
++    maximum = int(contract.max_latency_regression_cycles)
++    return {
++        "reference": "frozen_golden",
++        "verification_mode": contract.verification_mode,
++        "supported": bool(contract.supported),
++        "unsupported_reason": contract.reason,
++        "reference_clock": contract.reference_clock,
++        "max_latency_regression_cycles": maximum,
++        "effective_max_latency_regression_cycles": maximum if contract.supported else 0,
++        "current_best_total_latency_regression_cycles": current,
++        "remaining_latency_headroom_cycles": max(0, maximum - current) if contract.supported else 0,
++        "model_prediction_authority": "advisory_only",
++        "backend_verification_authority": True,
++        "phase1_scope": "single-clock fixed nonnegative design-level output shift",
++    }
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/timing_automation/latency_verifier.py nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/latency_verifier.py
+--- nebula_latency_base/phase5_to_9_groq_r3/timing_automation/latency_verifier.py	1970-01-01 00:00:00.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/latency_verifier.py	2026-09-13 21:19:28.301227713 +0000
+@@ -0,0 +1,383 @@
++#!/usr/bin/env python3
++"""Backend-authoritative fixed-cycle temporal equivalence for nEBULA.
++
++For a tested shift D >= 0, prove after the frozen reset/warm-up contract:
++
++    candidate_output(t) == golden_output(t-D)
++
++which is equivalent to candidate_output(t + D) == golden_output(t).
++
++The model's predicted latency is used only to order the proof attempts.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++from pathlib import Path
++import re
++from typing import Any, Mapping, Sequence
++
++try:
++    from design_manifest import DesignManifest
++    from latency_contract import LatencyContract
++    from yosys_structure import read_verilog_command, quote_yosys_token, yosys_identifier
++except ImportError:  # pragma: no cover
++    from timing_automation.design_manifest import DesignManifest
++    from timing_automation.latency_contract import LatencyContract
++    from timing_automation.yosys_structure import read_verilog_command, quote_yosys_token, yosys_identifier
++
++_SIMPLE_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
++
++
++def _sha(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def _formal_status(run: Mapping[str, Any], log_text: str) -> tuple[str, str]:
++    exit_code = run.get("exit_code")
++    if exit_code == 0:
++        return "passed", "proof_closed"
++    if exit_code == 124 or run.get("status") == "timeout":
++        return "inconclusive_timeout", "formal_timeout_is_not_a_functional_failure"
++    lowered = log_text.lower()
++    if "proof did fail" in lowered or "model found" in lowered or "assert failed" in lowered:
++        return "semantic_mismatch", "formal_counterexample"
++    return "tool_failure", "formal_tool_or_setup_failure"
++
++
++def _decl(name: str, width: int, *, kind: str = "wire") -> str:
++    if not _SIMPLE_ID.fullmatch(name):
++        raise ValueError(f"phase-1 latency harness does not support escaped port name {name!r}")
++    prefix = "" if width == 1 else f"[{width - 1}:0] "
++    return f"{kind} {prefix}{name}"
++
++
++def _port_width(port: Mapping[str, Any]) -> int:
++    bits = port.get("bits")
++    if not isinstance(bits, list) or not bits:
++        raise ValueError("invalid Yosys port bits")
++    return len(bits)
++
++
++def _build_wrapper(
++    *,
++    ports: Mapping[str, Mapping[str, Any]],
++    contract: LatencyContract,
++    shift_cycles: int,
++) -> str:
++    if not contract.reference_clock:
++        raise ValueError("latency contract has no reference clock")
++    clk = contract.reference_clock
++    if clk not in ports:
++        raise ValueError(f"reference clock {clk!r} not in top-level ports")
++
++    inputs: list[tuple[str, int]] = []
++    outputs: list[tuple[str, int]] = []
++    for name, port in ports.items():
++        direction = port.get("direction")
++        width = _port_width(port)
++        if direction == "input":
++            inputs.append((name, width))
++        elif direction == "output":
++            outputs.append((name, width))
++        else:
++            raise ValueError(f"phase-1 latency verification does not support inout port {name!r}")
++    if not outputs:
++        raise ValueError("top module has no observable outputs")
++
++    # Reset is generated internally so both designs receive exactly the same
++    # initialization trace. Other inputs, including the clock, remain harness inputs.
++    external_inputs = [(n, w) for n, w in inputs if n != contract.reset_port]
++    lines = ["module nebula_latency_harness("]
++    lines += [
++        "    " + _decl(name, width, kind="input wire") + ("," if i + 1 < len(external_inputs) else "")
++        for i, (name, width) in enumerate(external_inputs)
++    ]
++    lines.append(");")
++    lines.append("    reg [31:0] nebula_phase = 0;")
++    lines.append(f"    always @({contract.clock_edge} {clk}) begin")
++    lines.append("        if (nebula_phase != 32'hffffffff) nebula_phase <= nebula_phase + 1'b1;")
++    lines.append("    end")
++
++    if contract.reset_port:
++        active = int(contract.reset_active_level if contract.reset_active_level is not None else 1)
++        inactive = 1 - active
++        lines.append(
++            f"    wire {contract.reset_port} = (nebula_phase < {int(contract.initial_reset_cycles)}) ? "
++            f"1'b{active} : 1'b{inactive};"
++        )
++
++    for name, width in outputs:
++        lines.append("    " + _decl(f"gold_{name}", width) + ";")
++        lines.append("    " + _decl(f"cand_{name}", width) + ";")
++        for stage in range(shift_cycles):
++            lines.append("    " + _decl(f"gold_delay_{name}_{stage}", width, kind="reg") + " = 0;")
++
++    def connections(output_prefix: str) -> str:
++        conns: list[str] = []
++        for name, _width in inputs:
++            conns.append(f".{name}({name})")
++        for name, _width in outputs:
++            conns.append(f".{name}({output_prefix}_{name})")
++        return ", ".join(conns)
++
++    lines.append(f"    nebula_gold gold_i({connections('gold')});")
++    lines.append(f"    nebula_gate cand_i({connections('cand')});")
++
++    # One extra cycle beyond reset+delay avoids comparing on the release/fill edge.
++    compare_phase = int(contract.initial_reset_cycles) + int(shift_cycles) + 1
++    lines.append(f"    always @({contract.clock_edge} {clk}) begin")
++    for name, _width in outputs:
++        if shift_cycles:
++            lines.append(f"        gold_delay_{name}_0 <= gold_{name};")
++            for stage in range(1, shift_cycles):
++                lines.append(f"        gold_delay_{name}_{stage} <= gold_delay_{name}_{stage - 1};")
++    lines.append(f"        if (nebula_phase >= {compare_phase}) begin")
++    for name, _width in outputs:
++        expected = f"gold_delay_{name}_{shift_cycles - 1}" if shift_cycles else f"gold_{name}"
++        lines.append(f"            assert(cand_{name} == {expected});")
++    lines.append("        end")
++    lines.append("    end")
++    lines.append("endmodule")
++    return "\n".join(lines) + "\n"
++
++
++def _proof_script(
++    *,
++    golden_manifest: DesignManifest,
++    golden_base_dir: Path,
++    candidate_manifest: DesignManifest,
++    candidate_base_dir: Path,
++    wrapper: Path,
++    maxsteps: int,
++    seq_depth: int,
++) -> str:
++    gold_top = yosys_identifier(golden_manifest.top)
++    cand_top = yosys_identifier(candidate_manifest.top)
++    lines: list[str] = []
++    for manifest, base_dir, alias, stash in (
++        (golden_manifest, golden_base_dir, "nebula_gold", "gold_design"),
++        (candidate_manifest, candidate_base_dir, "nebula_gate", "gate_design"),
++    ):
++        lines.extend([
++            "design -reset-vlog",
++            read_verilog_command(manifest, base_dir),
++            f"prep -flatten -top {yosys_identifier(manifest.top)}",
++            "memory_map",
++            "opt_clean",
++            f"rename {yosys_identifier(manifest.top)} {alias}",
++            f"design -stash {stash}",
++        ])
++    lines.extend([
++        "design -copy-from gold_design -as nebula_gold nebula_gold",
++        "design -copy-from gate_design -as nebula_gate nebula_gate",
++        f"read_verilog -formal -sv {quote_yosys_token(str(wrapper))}",
++        "prep -top nebula_latency_harness",
++        "async2sync",
++        "opt -full",
++        f"sat -verify -prove-asserts -seq {int(seq_depth)} -tempinduct -maxsteps {int(maxsteps)} "
++        "-show-inputs -show-outputs nebula_latency_harness",
++    ])
++    return "\n".join(lines) + "\n"
++
++
++def _search_order(maximum: int, current_best_total: int, predicted_iteration_delta: int | None, diagnostic_extra: int) -> list[int]:
++    upper = maximum + max(0, diagnostic_extra)
++    order: list[int] = []
++    if predicted_iteration_delta is not None:
++        hint = current_best_total + predicted_iteration_delta
++        if 0 <= hint <= upper:
++            order.append(hint)
++    if 0 <= current_best_total <= upper and current_best_total not in order:
++        order.append(current_best_total)
++    for value in range(0, upper + 1):
++        if value not in order:
++            order.append(value)
++    return order
++
++
++def verify_fixed_latency(
++    *,
++    golden_manifest: DesignManifest,
++    golden_base_dir: Path,
++    candidate_manifest: DesignManifest,
++    candidate_base_dir: Path,
++    elaborated_golden_module: Mapping[str, Any],
++    contract: LatencyContract,
++    output_dir: Path,
++    yosys_exe: str | Path,
++    run_command,
++    current_best_total_latency_regression_cycles: int = 0,
++    predicted_latency_change_cycles: int | None = None,
++    timeout_s: int = 120,
++    maxsteps: int = 24,
++) -> dict[str, Any]:
++    """Try candidate-vs-Golden fixed-cycle shifts and return backend truth."""
++    output_dir = Path(output_dir)
++    output_dir.mkdir(parents=True, exist_ok=True)
++    result: dict[str, Any] = {
++        "schema": "nebula_latency_result/1",
++        "status": "unsupported_contract" if not contract.supported else "started",
++        "passed": False,
++        "reference": "frozen_golden",
++        "contract": contract.to_dict(),
++        "current_best_total_latency_regression_cycles": int(current_best_total_latency_regression_cycles),
++        "predicted_latency_change_cycles": predicted_latency_change_cycles,
++        "prediction_error_cycles": None,
++        "tested_shifts": [],
++        "verified_total_latency_regression_cycles": None,
++        "iteration_latency_delta_cycles": None,
++        "verified_shift_cycles": None,
++        "max_latency_regression_cycles": int(contract.max_latency_regression_cycles),
++        "formal_status": None,
++    }
++    if not contract.supported:
++        result["reason"] = contract.reason
++        return result
++
++    ports = elaborated_golden_module.get("ports") if isinstance(elaborated_golden_module, Mapping) else None
++    if not isinstance(ports, Mapping):
++        result.update(status="unsupported_contract", reason="elaborated Golden ports unavailable")
++        return result
++
++    order = _search_order(
++        int(contract.max_latency_regression_cycles),
++        int(current_best_total_latency_regression_cycles),
++        predicted_latency_change_cycles,
++        int(contract.diagnostic_extra_cycles),
++    )
++    attempts: list[dict[str, Any]] = []
++    saw_timeout = False
++    saw_tool_failure = False
++    for shift in order:
++        shift_dir = output_dir / f"shift_{shift:03d}"
++        shift_dir.mkdir(parents=True, exist_ok=True)
++        wrapper = shift_dir / "latency_harness.v"
++        script = shift_dir / "latency_proof.ys"
++        log = shift_dir / "latency_proof.log"
++        try:
++            wrapper.write_text(_build_wrapper(ports=ports, contract=contract, shift_cycles=shift), encoding="utf-8")
++            # Give induction enough sequential frames to see reset release and the
++            # complete delay chain, while keeping the user's existing maxsteps cap.
++            seq_depth = max(4, contract.initial_reset_cycles + shift + 3)
++            script.write_text(
++                _proof_script(
++                    golden_manifest=golden_manifest,
++                    golden_base_dir=Path(golden_base_dir),
++                    candidate_manifest=candidate_manifest,
++                    candidate_base_dir=Path(candidate_base_dir),
++                    wrapper=wrapper,
++                    maxsteps=maxsteps,
++                    seq_depth=seq_depth,
++                ),
++                encoding="utf-8",
++            )
++            run = run_command([str(yosys_exe), "-s", str(script)], log, timeout_s)
++            log_text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
++            status, reason = _formal_status(run, log_text)
++            attempt = {
++                "shift_cycles": shift,
++                "status": status,
++                "reason": reason,
++                "exit_code": run.get("exit_code"),
++                "log": str(log),
++                "script": str(script),
++                "script_sha256": _sha(script),
++                "harness": str(wrapper),
++                "harness_sha256": _sha(wrapper),
++            }
++        except Exception as exc:
++            status = "tool_failure"
++            saw_tool_failure = True
++            attempt = {
++                "shift_cycles": shift,
++                "status": status,
++                "reason": f"{type(exc).__name__}: {exc}",
++            }
++        attempts.append(attempt)
++        result["tested_shifts"].append(shift)
++
++        if status == "passed":
++            total = int(shift)
++            current = int(current_best_total_latency_regression_cycles)
++            result.update(
++                verified_total_latency_regression_cycles=total,
++                iteration_latency_delta_cycles=total - current,
++                verified_shift_cycles=total,
++                formal_status="passed",
++                proof_attempts=attempts,
++            )
++            if predicted_latency_change_cycles is not None:
++                result["prediction_error_cycles"] = (total - current) - int(predicted_latency_change_cycles)
++            if total <= contract.max_latency_regression_cycles:
++                result.update(status="verified", passed=True, reason="temporal_equivalence_proven_within_latency_budget")
++            else:
++                result.update(status="latency_budget_exceeded", passed=False, reason="temporal_equivalence_proven_only_beyond_latency_budget")
++            return result
++        if status == "inconclusive_timeout":
++            saw_timeout = True
++        elif status == "tool_failure":
++            saw_tool_failure = True
++
++    result["proof_attempts"] = attempts
++    if saw_timeout:
++        result.update(status="inconclusive_timeout", formal_status="inconclusive_timeout",
++                      reason="no permitted shift was proven and at least one proof timed out")
++    elif saw_tool_failure:
++        result.update(status="tool_failure", formal_status="tool_failure",
++                      reason="no permitted shift was proven and at least one proof had a tool/setup failure")
++    else:
++        result.update(status="no_allowed_latency_relation", formal_status="no_allowed_latency_relation",
++                      reason="all tested fixed-cycle relations within the bounded search produced counterexamples")
++    return result
++
++
++def cycle_exact_result(proof: Mapping[str, Any], *, current_best_total_latency_regression_cycles: int = 0) -> dict[str, Any]:
++    """Normalize the existing zero-latency formal result into the latency taxonomy.
++
++    Nonzero exit codes are separated into semantic counterexamples, timeouts, and
++    tool/setup failures when the existing proof log is available.
++    """
++    raw = str(proof.get("status") or "")
++    if raw == "passed":
++        return {
++            "schema": "nebula_latency_result/1",
++            "status": "verified",
++            "passed": True,
++            "reference": "frozen_golden",
++            "verified_total_latency_regression_cycles": 0,
++            "current_best_total_latency_regression_cycles": int(current_best_total_latency_regression_cycles),
++            "iteration_latency_delta_cycles": -int(current_best_total_latency_regression_cycles),
++            "verified_shift_cycles": 0,
++            "max_latency_regression_cycles": 0,
++            "formal_status": "passed",
++            "tested_shifts": [0],
++        }
++
++    log_text = ""
++    log_path = proof.get("log")
++    if isinstance(log_path, str):
++        try:
++            log_text = Path(log_path).read_text(encoding="utf-8", errors="replace")
++        except OSError:
++            pass
++    status, reason = _formal_status(proof, log_text)
++    # Historical cal.v2.verify writes status=unproven for every non-timeout
++    # nonzero exit.  With no decisive counterexample marker, keep it as a tool
++    # failure instead of blaming the candidate semantically.
++    if raw == "timeout":
++        status, reason = "inconclusive_timeout", "formal_timeout_is_not_a_functional_failure"
++    return {
++        "schema": "nebula_latency_result/1",
++        "status": status,
++        "passed": False,
++        "reference": "frozen_golden",
++        "verified_total_latency_regression_cycles": None,
++        "current_best_total_latency_regression_cycles": int(current_best_total_latency_regression_cycles),
++        "iteration_latency_delta_cycles": None,
++        "verified_shift_cycles": None,
++        "max_latency_regression_cycles": 0,
++        "formal_status": status,
++        "tested_shifts": [0],
++        "reason": reason,
++    }
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/timing_automation/optimizer_history.py nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/optimizer_history.py
+--- nebula_latency_base/phase5_to_9_groq_r3/timing_automation/optimizer_history.py	2026-09-13 18:03:44.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/optimizer_history.py	2026-09-13 21:19:28.301561030 +0000
+@@ -14,7 +14,7 @@
+     comparable = bool(promotion.get("comparable"))
+     infrastructure = status in {
+         "groq_failed", "model_output_truncated", "physical_flow_failed", "synthesis_failed",
+-        "infrastructure_failed", "formal_timeout"
++        "infrastructure_failed", "formal_timeout", "formal_tool_failure"
+     }
+     synthesis = row.get("synthesis") if isinstance(row.get("synthesis"), Mapping) else {}
+     candidate_hash = synthesis.get("candidate_hash") if isinstance(synthesis.get("candidate_hash"), Mapping) else {}
+@@ -32,7 +32,13 @@
+         "synthesis_implementation": row.get("synthesis_implementation_id"),
+         "normalized_synthesis_hash": candidate_hash.get("sha256"),
+         "synthesis_duplicate": bool(row.get("synthesis_duplicate", False)),
+-        "formal_result": row.get("formal", {}).get("status"),
++        "formal_result": row.get("formal_classification") or row.get("formal", {}).get("status"),
++        "predicted_latency_change_cycles": row.get("predicted_latency_change_cycles"),
++        "verified_latency_change_cycles": (row.get("latency_result") or {}).get("iteration_latency_delta_cycles"),
++        "verified_total_latency_regression_cycles": (row.get("latency_result") or {}).get("verified_total_latency_regression_cycles"),
++        "latency_result": (row.get("latency_result") or {}).get("status"),
++        "meaningful_iteration": bool(row.get("meaningful_iteration", False)),
++        "meaningful_iteration_number": row.get("meaningful_iteration_number"),
+         "ppa_deltas": row.get("ppa_deltas", {}),
+         "comparable": comparable,
+         "promoted": status == "promoted",
+@@ -58,7 +64,9 @@
+         for key in (
+             "attempt", "decision", "editing_base", "attempted_transformation_family",
+             "source_duplicate", "synthesis_implementation", "formal_result",
+-            "ppa_deltas", "promoted", "outcome_type", "rejection_reason",
++            "predicted_latency_change_cycles", "verified_latency_change_cycles",
++            "verified_total_latency_regression_cycles", "latency_result",
++            "meaningful_iteration_number", "ppa_deltas", "promoted", "outcome_type", "rejection_reason",
+         )
+         if record.get(key) not in (None, {}, [])
+     }
+@@ -87,6 +95,23 @@
+             "concise candidate. Do not expand arithmetic or simple logic into exhaustive case/lookup tables "
+             "or other source-code blowups; choose a compact structural RTL implementation."
+         )
++    elif status == "latency_budget_exceeded":
++        lr = row.get("latency_result") if isinstance(row.get("latency_result"), Mapping) else {}
++        instruction = (
++            "The candidate was temporally equivalent, but backend-verified total latency regression "
++            f"({lr.get('verified_total_latency_regression_cycles')}) exceeded the Golden-relative budget "
++            f"({lr.get('max_latency_regression_cycles')}). Reduce/remove pipeline depth or choose a same-latency strategy."
++        )
++    elif status == "not_proven" and (row.get("latency_result") or {}).get("status") == "no_allowed_latency_relation":
++        instruction = (
++            "No tested fixed-cycle temporal relation to frozen Golden was proven. Check pipeline alignment, reset/warm-up behavior, "
++            "and functional logic; do not rely on the predicted latency value."
++        )
++    elif status in {"formal_timeout", "formal_tool_failure", "latency_contract_unsupported"}:
++        instruction = (
++            "The backend did not establish a semantic rejection for this transformation. Treat this as inconclusive/tool/contract feedback, "
++            "not proof that the transformation family is invalid; prefer a simpler candidate within the supported single-clock fixed-latency contract."
++        )
+     elif status == "candidate_rejected" and row.get("rejection_reason") == "source_bundle_file_set_changed":
+         fileset = row.get("source_bundle_file_set") if isinstance(row.get("source_bundle_file_set"), Mapping) else {}
+         unexpected = fileset.get("unexpected") or []
+@@ -98,7 +123,7 @@
+             detail.append("missing files: " + ", ".join(str(x) for x in missing))
+         suffix = (" (" + "; ".join(detail) + ")") if detail else ""
+         instruction = (
+-            "This pre-freeze complete-source format does not permit changing the selected editing-base file set"
++            "This complete-source candidate format does not permit changing the selected editing-base file set"
+             + suffix + ". Return exactly the existing source files. If you need a helper module, place the complete "
+             "helper module inside an existing returned .v file, or choose a different implementation."
+         )
+@@ -112,6 +137,7 @@
+         "lint": row.get("lint", {}).get("reasons", []),
+         "elaboration": row.get("reason"),
+         "formal": row.get("formal", {}),
++        "latency_result": row.get("latency_result", {}),
+         "synthesis_no_op": row.get("synthesis_no_op"),
+         "promotion": row.get("promotion", {}),
+         "instruction": instruction,
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py
+--- nebula_latency_base/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py	2026-09-13 18:03:44.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py	2026-09-13 21:15:01.232891466 +0000
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env python3
+ """nEBULA prompt rendering helpers.
+ 
+-The pre-freeze runner exposes three explicit model contexts:
++The latency-aware runner exposes three explicit model contexts:
+   * GOLDEN RTL: immutable correctness reference
+   * CURRENT BEST RTL: best promoted PPA reference and preferred editing base
+   * PREVIOUS ATTEMPTS: compact backend-generated outcome history only
+@@ -48,7 +48,8 @@
+             key: feedback.get(key)
+             for key in (
+                 "outcome_type", "instruction", "ppa_deltas", "rejection_reason",
+-                "synthesis_implementation", "duplicate_of_attempt",
++                "synthesis_implementation", "duplicate_of_attempt", "latency_result",
++                "verified_latency_change_cycles", "predicted_latency_change_cycles",
+             )
+             if feedback.get(key) is not None
+         }
+@@ -79,10 +80,14 @@
+         "For a candidate, choose exactly one editing_base: golden or current_best. Use only that complete "
+         "source bundle to construct every returned source file. Do not mix bases. The backend owns editing-base "
+         "identities and SHA-256 values; do not copy bundle hashes, design identities, or per-file hashes into "
+-        "the response. In this pre-freeze complete-source format, return exactly the source-file set present in the "
++        "the response. In this complete-source format, return exactly the source-file set present in the "
+         "selected editing base; do not introduce or omit source files. If a helper module is useful, define it in an "
+-        "existing returned .v file. Preserve the top-level interface, parameters, cycle-visible latency, and permitted clock/reset contract. Bottleneck "
+-        "locations and target_unit_id are diagnostic evidence only and are never edit boundaries.\n\n"
++        "existing returned .v file. Preserve the top-level interface and parameters. Latency is policy-controlled: "
++        "you may pipeline or legally retime using only an existing permitted clock/reset domain when the supplied "
++        "latency_policy allows it. Do not introduce clocks, clock domains, latches, or change the externally visible "
++        "clock/reset contract. predicted_latency_change_cycles is advisory; nEBULA independently proves the actual "
++        "total latency relation against frozen GOLDEN and rejects only verified policy violations. Bottleneck locations "
++        "and target_unit_id are diagnostic evidence only and are never edit boundaries.\n\n"
+         "Do not return GOLDEN unchanged. Do not return CURRENT BEST unchanged. Do not reproduce any prior "
+         "candidate unchanged. Avoid intentionally reproducing implementation classes that backend synthesis "
+         "has already marked explored/rejected. Seek a materially different structural implementation. Keep the "
+@@ -113,6 +118,13 @@
+         "editing_base_policy": request.get("editing_base_policy", {}),
+         "candidate_contract": request["candidate_contract"],
+         "user_ppa_budgets": request.get("user_ppa_budgets", {}),
++        "latency_policy": request.get("latency_policy", {
++            "reference": "frozen_golden",
++            "max_latency_regression_cycles": 0,
++            "current_best_total_latency_regression_cycles": 0,
++            "remaining_latency_headroom_cycles": 0,
++            "model_prediction_authority": "advisory_only",
++        }),
+         "current_best_evidence": {
+             key: value
+             for key, value in request.get("current_best_evidence", {}).items()
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/timing_automation/report_guided_experiment.py nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/report_guided_experiment.py
+--- nebula_latency_base/phase5_to_9_groq_r3/timing_automation/report_guided_experiment.py	2026-09-13 16:13:15.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/report_guided_experiment.py	2026-09-13 21:13:00.689603566 +0000
+@@ -23,6 +23,10 @@
+         }
+     guidance_attempts = [a for r in results if r.get("arm") != "exploratory" for a in r.get("attempts", [])]
+     fallback = sum(a.get("guidance", {}).get("mode_used") == "exploratory" for a in guidance_attempts)
++    latency_results = [a.get("latency_result") for a in attempts if isinstance(a.get("latency_result"), dict)]
++    verified_latency = [x for x in latency_results if x.get("status") == "verified" and x.get("passed") is True]
++    prediction_errors = [x.get("prediction_error_cycles") for x in verified_latency
++                         if isinstance(x.get("prediction_error_cycles"), int)]
+     successful_designs = sum(
+         (int(r.get("current_best_epoch") or 0) > 0) or r.get("status") == "promoted"
+         for r in results
+@@ -53,12 +57,20 @@
+         "guidance_attempts": len(guidance_attempts),
+         "fallback_count": fallback,
+         "fallback_rate": rate(fallback, len(guidance_attempts)),
++        "meaningful_iterations": sum(bool(a.get("meaningful_iteration")) for a in attempts),
++        "latency_verified_count": len(verified_latency),
++        "latency_budget_exceeded_count": sum(x.get("status") == "latency_budget_exceeded" for x in latency_results),
++        "latency_relation_mismatch_count": sum(x.get("status") == "no_allowed_latency_relation" for x in latency_results),
++        "formal_inconclusive_count": sum(x.get("status") in {"inconclusive_timeout", "tool_failure", "unsupported_contract"}
++                                         for x in latency_results),
++        "pipelining_candidate_count": sum(a.get("optimization_class") == "pipelining" for a in attempts),
++        "latency_prediction_error_median_cycles": median(prediction_errors) if prediction_errors else None,
+         "metrics": metrics,
+     }
+ 
+ 
+ def summarize(arms):
+-    return {"schema": "guided_experiment_summary/1", "arms": {
++    return {"schema": "guided_experiment_summary/2", "arms": {
+         arm: {"aggregate": aggregate(rows), "per_design": {
+             design: aggregate([r for r in rows if r["id"] == design]) for design in sorted({r["id"] for r in rows})}}
+         for arm, rows in arms.items()},
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json
+--- nebula_latency_base/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json	1970-01-01 00:00:00.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json	2026-09-13 21:03:43.802557220 +0000
+@@ -0,0 +1,133 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "https://nebula.local/schemas/optimizer_response_latency.schema.json",
++  "title": "nEBULA Latency-Aware Optimizer Response",
++  "description": "One latency-aware optimizer decision. The LLM chooses only an editing base and transformation intent; backend owns identity, formal truth, verified latency, duplicate truth, and promotion.",
++  "oneOf": [
++    {"$ref": "#/$defs/candidate_response"},
++    {"$ref": "#/$defs/stop_response"}
++  ],
++  "$defs": {
++    "candidate_response": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "schema_version",
++        "decision",
++        "editing_base",
++        "optimization_class",
++        "chosen_pattern_id",
++        "target_unit_id",
++        "source_files",
++        "rationale",
++        "predicted_wns_gain_ns",
++        "predicted_area_change_pct",
++        "predicted_power_change_pct",
++        "predicted_latency_change_cycles",
++        "sequential_changes",
++        "self_checks"
++      ],
++      "properties": {
++        "schema_version": {"type": "string", "const": "3.2"},
++        "decision": {"type": "string", "const": "propose_candidate"},
++        "editing_base": {
++          "type": "string",
++          "enum": ["golden", "current_best"],
++          "description": "Construction/materialization base only. Formal remains against Golden and PPA remains against Current Best."
++        },
++        "optimization_class": {
++          "type": "string",
++          "enum": ["pipelining", "logic_restructuring", "retiming", "fsm_optimization", "mixed", "custom"]
++        },
++        "chosen_pattern_id": {
++          "type": ["string", "null"],
++          "description": "Advisory pattern/family label."
++        },
++        "target_unit_id": {
++          "type": "string",
++          "const": "whole_design",
++          "description": "Diagnostic whole-design unit; never an edit boundary."
++        },
++        "rationale": {"type": "string", "minLength": 1},
++        "predicted_wns_gain_ns": {"type": ["number", "null"]},
++        "predicted_area_change_pct": {"type": ["number", "null"]},
++        "predicted_power_change_pct": {"type": ["number", "null"]},
++        "predicted_latency_change_cycles": {
++          "type": ["integer", "null"],
++          "description": "Advisory prediction relative to the unchanged Current Best. Backend independently proves total latency relative to frozen Golden."
++        },
++        "sequential_changes": {
++          "type": "array",
++          "items": {"$ref": "#/$defs/sequential_change"}
++        },
++        "self_checks": {"$ref": "#/$defs/self_checks"},
++        "source_files": {
++          "type": "array",
++          "minItems": 1,
++          "description": "Every source file in the selected editing base exactly once, with complete candidate text. No new/omitted files in this phase.",
++          "items": {
++            "type": "object",
++            "additionalProperties": false,
++            "required": ["target_file", "verilog"],
++            "properties": {
++              "target_file": {"type": "string", "minLength": 1},
++              "verilog": {"type": "string", "minLength": 1}
++            }
++          }
++        }
++      }
++    },
++    "stop_response": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": ["schema_version", "decision", "rationale"],
++      "properties": {
++        "schema_version": {"type": "string", "const": "3.2"},
++        "decision": {"type": "string", "const": "no_further_optimization"},
++        "rationale": {"type": "string", "minLength": 1}
++      }
++    },
++    "sequential_change": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": ["kind", "clock_domain", "rationale"],
++      "properties": {
++        "kind": {
++          "type": "string",
++          "enum": ["pipeline_register", "retimed_register", "fsm_state_change", "other_intentional_state"]
++        },
++        "clock_domain": {"type": "string", "minLength": 1},
++        "rationale": {"type": "string", "minLength": 1}
++      }
++    },
++    "self_checks": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "interface_unchanged",
++        "parameters_unchanged",
++        "latency_policy_considered",
++        "clock_reset_behavior_unchanged",
++        "uses_only_permitted_clock_reset_domains",
++        "intentional_sequential_changes_declared",
++        "source_bundle_targets_valid",
++        "no_new_latches",
++        "no_new_clock_domains"
++      ],
++      "properties": {
++        "interface_unchanged": {"type": "boolean"},
++        "parameters_unchanged": {"type": "boolean"},
++        "latency_policy_considered": {"type": "boolean"},
++        "latency_unchanged": {"type": "boolean"},
++        "clock_reset_behavior_unchanged": {"type": "boolean"},
++        "uses_only_permitted_clock_reset_domains": {"type": "boolean"},
++        "intentional_sequential_changes_declared": {"type": "boolean"},
++        "source_bundle_targets_valid": {"type": "boolean"},
++        "no_new_latches": {"type": "boolean"},
++        "no_new_clock_domains": {"type": "boolean"},
++        "notes": {"type": "array", "items": {"type": "string"}}
++      }
++    }
++  },
++  "$comment": "Latency-aware complete-source schema. Model latency predictions/self-checks are advisory. Backend independently proves the temporal relation."
++}
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py
+--- nebula_latency_base/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py	2026-09-13 18:03:44.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py	2026-09-13 21:18:44.264226032 +0000
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env python3
+ """Run Groq-generated RTL optimization with immutable Golden and promoted Current Best.
+ 
+-Pre-freeze architecture:
++Core architecture:
+   * GOLDEN is immutable and is always the formal correctness reference.
+   * CURRENT BEST starts as Golden and changes only after repeat-confirmed promotion.
+   * The model chooses one editing base (golden or current_best) for each candidate.
+@@ -10,7 +10,9 @@
+   * PPA always compares the candidate against the unchanged Current Best snapshot.
+   * A model no_further_optimization response is advisory; backend convergence owns stop.
+ 
+-Latency-changing/pipelining verification is intentionally out of scope for this freeze.
++Latency-changing/pipelining verification is policy-controlled. Budget zero preserves
++the validated cycle-exact path; positive budgets enable backend-proven fixed-cycle
++temporal equivalence against frozen Golden before synthesis/PPA.
+ """
+ from __future__ import annotations
+ 
+@@ -32,10 +34,12 @@
+ import calibrate_pairs_v3 as cal
+ from build_optimizer_input import normalize_transformation_family
+ from design_manifest import DesignManifest, VerificationPolicy
++from latency_contract import build_latency_contract, latency_policy_for_prompt
++from latency_verifier import cycle_exact_result, verify_fixed_latency
+ from evaluate_candidate import assess_guided_candidate
+ from extract_candidate import (
+     extract_json_response, extract_optimizer_response, StopRecommendation,
+-    CandidateSourceBundleFileSetError,
++    CandidateSourceBundleFileSetError, CandidateExtractionError,
+ )
+ from guidance_packet import packet_from_run
+ from lint_candidate import lint_candidate
+@@ -47,7 +51,7 @@
+ 
+ 
+ ROOT = cal.ROOT
+-SCHEMA = ROOT / "timing_automation/response_schema_prefreeze.json"
++SCHEMA = ROOT / "timing_automation/response_schema_latency.json"
+ TIMING_GRID_NS = (0.60, 0.80, 1.00, 1.25, 1.50, 2.00, 2.50, 3.00)
+ 
+ 
+@@ -99,6 +103,7 @@
+     epoch: int,
+     metrics: Mapping[str, Any] | None,
+     promoted_from_attempt: int | None,
++    verified_total_latency_regression_cycles: int = 0,
+ ) -> dict[str, Any]:
+     """Copy one immutable SourceBundle snapshot and return its descriptor."""
+     bundle = SourceBundle.from_manifest(manifest, base_dir, verify_manifest_hashes=True)
+@@ -137,6 +142,7 @@
+         "executable_identity_sha256": identity_record["executable_identity_sha256"],
+         "metrics": dict(metrics or {}),
+         "promoted_from_attempt": promoted_from_attempt,
++        "verified_total_latency_regression_cycles": int(verified_total_latency_regression_cycles),
+     }
+     write_json(destination / "snapshot.json", snapshot)
+     return snapshot
+@@ -204,6 +210,7 @@
+     guidance: Mapping[str, Any] | None,
+     history: list[Mapping[str, Any]],
+     budgets: Mapping[str, Any],
++    latency_policy: Mapping[str, Any],
+ ) -> dict[str, Any]:
+     golden_bundle = snapshot_bundle(golden_snapshot)
+     current_bundle = snapshot_bundle(current_best_snapshot)
+@@ -211,12 +218,13 @@
+     primary = current_bundle.source_names()[0]
+     return {
+         "schema": "optimizer_request/2",
+-        "request_semantics": "golden_current_best_prefreeze/1",
+-        "response_schema_version": "3.1",
++        "request_semantics": "golden_current_best_latency_aware/1",
++        "response_schema_version": "3.2",
+         "unit_id": "whole_design",
+         "optimizer_mode": (guidance or {}).get("mode_used", "exploratory"),
+         "guidance": guidance,
+         "user_ppa_budgets": dict(budgets),
++        "latency_policy": dict(latency_policy),
+         "golden": prompt_snapshot(golden_snapshot, include_text=True),
+         "current_best": prompt_snapshot(current_best_snapshot, include_text=not same, same_as_golden=same),
+         "previous_attempts": [dict(item) for item in history],
+@@ -239,7 +247,8 @@
+             "same_top_level_interface_required": True,
+             "formal_equivalence_against_golden_required": True,
+             "ppa_against_current_best_required": True,
+-            "cycle_visible_latency_unchanged": True,
++            "latency_policy_controlled": True,
++            "backend_verified_latency_required": True,
+         },
+         "current_best_evidence": dict(current_best_evidence),
+     }
+@@ -377,6 +386,10 @@
+         "lint_failed": "lint_failed",
+         "not_proven": "formal_not_proven",
+         "formal_timeout": "formal_timeout",
++        "formal_tool_failure": "formal_tool_failure",
++        "latency_contract_unsupported": "latency_contract_unsupported",
++        "latency_budget_exceeded": "latency_budget_exceeded",
++        "candidate_rejected": "invalid_candidate_response",
+         "model_stop_accepted": "backend_convergence_confirmed_model_stop",
+         "stop_recommendation_not_supported": "backend_convergence_not_met",
+     }
+@@ -413,13 +426,7 @@
+             "status": row.get("formal", {}).get("status") if isinstance(row.get("formal"), Mapping) else None,
+             "reason": row.get("formal", {}).get("reason") if isinstance(row.get("formal"), Mapping) else None,
+         },
+-        "latency_result": {
+-            "status": "candidate_contract_only",
+-            "candidate_declared_unchanged": True if row.get("model_decision") == "propose_candidate" else None,
+-            "verified_latency_cycles": None,
+-            "max_latency_regression_cycles": None,
+-            "note": "latency-changing verification is intentionally deferred in this pre-freeze runner",
+-        },
++        "latency_result": dict(row.get("latency_result") or {}),
+         "ppa_result": {
+             "available": bool(ppa),
+             "comparable": promotion.get("comparable") if promotion else None,
+@@ -527,13 +534,15 @@
+     working_manifest = make_manifest(pair, directory)
+     selected, golden_evidence = baseline_data if baseline_data is not None else select_baseline(pair, directory)
+     result = {
+-        "schema": "groq_result/4",
++        "schema": "groq_result/5",
+         "id": pair["id"],
+         "arm": args.optimizer_mode,
+         "groq": {"model": args.model},
+         "user_ppa_budgets": user_budgets(args),
+         "baseline_evidence": golden_evidence,
+         "attempts": [],
++        "model_call_count": 0,
++        "meaningful_iteration_count": 0,
+     }
+     checkpoint = directory / "result.json"
+     if selected is None:
+@@ -541,15 +550,24 @@
+         write_json(checkpoint, result)
+         return result
+ 
++    latency_contract = build_latency_contract(
++        pair=pair, manifest=working_manifest, base_dir=directory,
++        elaborated_module=selected["module"],
++        max_latency_regression_cycles=args.max_latency_regression_cycles,
++    )
++    result["latency_contract"] = latency_contract.to_dict()
++
+     state_root = directory / "state"
+     golden_snapshot = clone_bundle_snapshot(
+         working_manifest, directory, state_root / "golden", role="golden", epoch=0,
+         metrics=selected["run"].get("metrics", {}), promoted_from_attempt=None,
++        verified_total_latency_regression_cycles=0,
+     )
+     golden_manifest = snapshot_manifest(golden_snapshot)
+     current_best = clone_bundle_snapshot(
+         golden_manifest, Path(golden_snapshot["base_dir"]), state_root / "current_best" / "epoch_000",
+         role="current_best", epoch=0, metrics=selected["run"].get("metrics", {}), promoted_from_attempt=None,
++        verified_total_latency_regression_cycles=0,
+     )
+     write_json(state_root / "golden_snapshot.json", golden_snapshot)
+     (state_root / "current_best_history.jsonl").write_text(json.dumps(current_best, sort_keys=True) + "\n", encoding="utf-8")
+@@ -565,6 +583,7 @@
+         "metrics": current_best_run.get("metrics", {}),
+         "source_role": "current_best",
+         "current_best_epoch": 0,
++        "verified_total_latency_regression_cycles": 0,
+     }
+     current_best_source = snapshot_primary_source(current_best)
+     guidance = diagnose(current_best_run, current_best_source, golden_manifest.top, directory / "baseline_guidance", args)
+@@ -574,16 +593,25 @@
+     feedback: Mapping[str, Any] = {}
+     _write_state_indexes(directory, candidate_index, synthesis_index, current_best)
+ 
+-    for attempt in range(1, args.max_attempts + 1):
++    for attempt in range(1, args.max_model_calls + 1):
+         if result.get("convergence"):
+             break
++        if int(result.get("meaningful_iteration_count", 0)) >= args.max_meaningful_iterations:
++            result["stopping_reason"] = "max_meaningful_iterations_reached"
++            break
+         attempt_dir = directory / f"attempt_{attempt:02d}"
+         attempt_dir.mkdir(parents=True, exist_ok=True)
+         epoch_at_start = int(current_best["epoch"])
+         model_history = [compact_attempt_for_model(r) for r in result["attempts"]]
++        active_latency_policy = latency_policy_for_prompt(
++            latency_contract,
++            current_best_total_latency_regression_cycles=int(
++                current_best.get("verified_total_latency_regression_cycles", 0)
++            ),
++        )
+         request = make_request(
+             golden_snapshot, current_best, current_best_evidence, guidance,
+-            model_history, user_budgets(args),
++            model_history, user_budgets(args), active_latency_policy,
+         )
+         schema = json.loads(SCHEMA.read_text())
+         try:
+@@ -623,12 +651,16 @@
+             "synthesis_duplicate": False,
+             "ppa_deltas": {},
+             "transformation_family_history": [guided_attempt_record(r) for r in result["attempts"]],
++            "model_call_number": attempt,
++            "meaningful_iteration": False,
++            "meaningful_iteration_number": None,
+         }
+         result["attempts"].append(row)
+         write_json(checkpoint, result)
+ 
+         try:
+             row["groq_call_attempted"] = True
++            result["model_call_count"] = int(result.get("model_call_count", 0)) + 1
+             groq_result = call_groq(
+                 system_prompt=system, user_prompt=user, model=args.model,
+                 max_tokens=args.max_tokens, reasoning_effort=args.reasoning_effort,
+@@ -710,6 +742,9 @@
+                     attempted_transformation_family=normalize_transformation_family(family),
+                     family_provenance="candidate.chosen_pattern_id",
+                 )
++            row["optimization_class"] = payload.get("optimization_class")
++            row["predicted_latency_change_cycles"] = payload.get("predicted_latency_change_cycles")
++            row["sequential_changes"] = payload.get("sequential_changes") or []
+ 
+             selected_manifest = snapshot_manifest(selected_snapshot)
+             selected_bundle = snapshot_bundle(selected_snapshot)
+@@ -732,7 +767,7 @@
+             if isinstance(parsed, StopRecommendation):
+                 raise ValueError("candidate branch parsed as stop recommendation")
+             if parsed.complete_sources is None:
+-                raise ValueError("pre-freeze candidate must provide a complete source bundle")
++                raise ValueError("latency-aware candidate must provide a complete source bundle")
+ 
+             # HARD exact-copy gate before lint/Yosys/formal.  Record every fully
+             # specified candidate immediately, including candidates that later fail lint.
+@@ -785,6 +820,10 @@
+             if candidate_bundle.bundle_sha256() != candidate_bundle_sha:
+                 raise ValueError("materialized candidate identity differs from pre-lint complete-source identity")
+ 
++            result["meaningful_iteration_count"] = int(result.get("meaningful_iteration_count", 0)) + 1
++            row["meaningful_iteration"] = True
++            row["meaningful_iteration_number"] = result["meaningful_iteration_count"]
++
+             # Formal is ALWAYS frozen Golden versus materialized Candidate.
+             golden_source = snapshot_primary_source(golden_snapshot)
+             candidate_source = candidate_manifest.resolve_path(candidate_manifest.source_files[0], attempt_dir / "candidate")
+@@ -798,10 +837,60 @@
+             if module is None:
+                 row.update(status="candidate_elaboration_failed", reason=groq_pair.get("qualification_reason"))
+                 continue
+-            proof = cal.v2.verify(groq_pair, formal_dir)
++
++            current_best_latency = int(current_best.get("verified_total_latency_regression_cycles", 0))
++            if args.max_latency_regression_cycles == 0 or not latency_contract.supported:
++                proof = cal.v2.verify(groq_pair, formal_dir)
++                latency_result = cycle_exact_result(
++                    proof, current_best_total_latency_regression_cycles=current_best_latency
++                )
++                if args.max_latency_regression_cycles > 0 and not latency_contract.supported:
++                    latency_result.update(
++                        verification_mode="cycle_exact_fallback_unsupported_latency_contract",
++                        latency_change_supported=False,
++                        requested_max_latency_regression_cycles=args.max_latency_regression_cycles,
++                        latency_contract_reason=latency_contract.reason,
++                    )
++            else:
++                latency_result = verify_fixed_latency(
++                    golden_manifest=golden_manifest,
++                    golden_base_dir=Path(str(golden_snapshot["base_dir"])),
++                    candidate_manifest=candidate_manifest,
++                    candidate_base_dir=attempt_dir / "candidate",
++                    elaborated_golden_module=selected["module"],
++                    contract=latency_contract,
++                    output_dir=attempt_dir / "latency",
++                    yosys_exe=cal.v2.YOSYS,
++                    run_command=cal.v2.run,
++                    current_best_total_latency_regression_cycles=current_best_latency,
++                    predicted_latency_change_cycles=row.get("predicted_latency_change_cycles"),
++                    timeout_s=int(golden_manifest.verification.options.get("timeout_s", 120)),
++                )
++                proof = {
++                    "status": "passed" if latency_result.get("passed") else (
++                        "timeout" if latency_result.get("status") == "inconclusive_timeout" else "unproven"
++                    ),
++                    "mode": "fixed_cycle_latency",
++                    "verified_shift_cycles": latency_result.get("verified_shift_cycles"),
++                    "reason": latency_result.get("reason"),
++                }
++            row["latency_result"] = latency_result
++            write_json(attempt_dir / "latency_result.json", latency_result)
+             row["formal"] = proof
+-            if proof["status"] != "passed":
+-                row["status"] = "formal_timeout" if proof["status"] == "timeout" else "not_proven"
++            row["formal_classification"] = latency_result.get("formal_status") or latency_result.get("status")
++            if not latency_result.get("passed"):
++                status = latency_result.get("status")
++                if status == "inconclusive_timeout":
++                    row["status"] = "formal_timeout"
++                elif status == "tool_failure":
++                    row["status"] = "formal_tool_failure"
++                elif status == "unsupported_contract":
++                    row["status"] = "latency_contract_unsupported"
++                elif status == "latency_budget_exceeded":
++                    row["status"] = "latency_budget_exceeded"
++                else:
++                    row["status"] = "not_proven"
++                row["reason"] = latency_result.get("reason")
+                 continue
+ 
+             # PPA baseline is ALWAYS the unchanged Current Best snapshot at attempt start.
+@@ -880,6 +969,7 @@
+             promotion = assess_guided_candidate(
+                 baseline, candidate, proof, user_budgets(args),
+                 comparison_reference=current_best["identity"],
++                latency_result=row.get("latency_result"),
+             )
+             row.update(
+                 status="promoted" if promotion["keep"] else "analyzed" if promotion["comparable"] else "physical_flow_failed",
+@@ -894,6 +984,7 @@
+                 repeat = assess_guided_candidate(
+                     rb, rc, proof, user_budgets(args),
+                     comparison_reference=current_best["identity"],
++                    latency_result=row.get("latency_result"),
+                 )
+                 row.update(repeat_ppa={"baseline": rb, "candidate": rc}, repeat_promotion=repeat)
+                 if not repeat["keep"]:
+@@ -909,6 +1000,9 @@
+                         state_root / "current_best" / f"epoch_{new_epoch:03d}",
+                         role="current_best", epoch=new_epoch,
+                         metrics=promoted_metrics, promoted_from_attempt=attempt,
++                        verified_total_latency_regression_cycles=int(
++                            row.get("latency_result", {}).get("verified_total_latency_regression_cycles", 0)
++                        ),
+                     )
+                     with (state_root / "current_best_history.jsonl").open("a", encoding="utf-8") as f:
+                         f.write(json.dumps(current_best, sort_keys=True) + "\n")
+@@ -920,6 +1014,9 @@
+                         "source_role": "current_best",
+                         "current_best_epoch": new_epoch,
+                         "promoted_from_attempt": attempt,
++                        "verified_total_latency_regression_cycles": int(
++                            current_best.get("verified_total_latency_regression_cycles", 0)
++                        ),
+                     }
+                     guidance = diagnose(
+                         current_best_run, current_best_source, golden_manifest.top,
+@@ -955,6 +1052,13 @@
+ 
+             _write_state_indexes(directory, candidate_index, synthesis_index, current_best)
+ 
++        except CandidateExtractionError as exc:
++            row.update(
++                status="candidate_rejected",
++                rejection_reason="invalid_candidate_response",
++                reason=f"{type(exc).__name__}: {exc}",
++                code_bug=False,
++            )
+         except Exception as exc:
+             is_infra = isinstance(exc, (OSError, subprocess.SubprocessError, TimeoutError, MemoryError))
+             row.update(
+@@ -990,6 +1094,9 @@
+     result["golden_snapshot"] = golden_snapshot
+     result["final_current_best"] = current_best
+     result["current_best_epoch"] = current_best["epoch"]
++    result["final_verified_total_latency_regression_cycles"] = int(
++        current_best.get("verified_total_latency_regression_cycles", 0)
++    )
+     result["rejected_synthesis_hash_history"] = sorted(
+         rejected_synthesis_global.values(), key=lambda item: int(item.get("attempt") or 0)
+     )
+@@ -1023,7 +1130,14 @@
+     ap.add_argument("--max-tokens", type=int, default=6500)
+     ap.add_argument("--reasoning-effort", choices=("low", "medium", "high"), default="medium")
+     ap.add_argument("--temperature", type=float, default=0.0)
+-    ap.add_argument("--max-attempts", type=int, default=5)
++    ap.add_argument("--max-attempts", type=int, default=5,
++                    help="backward-compatible default for model-call and meaningful-iteration limits")
++    ap.add_argument("--max-model-calls", type=int, default=None,
++                    help="hard cap on provider/model invocations; defaults to --max-attempts")
++    ap.add_argument("--max-meaningful-iterations", type=int, default=None,
++                    help="cap on novel structurally valid candidates reaching semantic verification; defaults to --max-attempts")
++    ap.add_argument("--max-latency-regression-cycles", type=int, default=0,
++                    help="maximum backend-verified total latency regression from frozen Golden; 0 preserves cycle-exact behavior")
+     ap.add_argument("--convergence-duplicate-limit", type=int, default=2,
+                     help="early-stop duplicate-hit threshold after enough unique rejected syntheses; 0 disables")
+     ap.add_argument("--convergence-min-unique-syntheses", type=int, default=2,
+@@ -1044,12 +1158,18 @@
+     if args.self_test:
+         self_test()
+         return 0
+-    for name in ("max_attempts", "max_guidance_groups", "max_excerpts_per_group", "repetitions", "max_tokens",
++    if args.max_model_calls is None:
++        args.max_model_calls = args.max_attempts
++    if args.max_meaningful_iterations is None:
++        args.max_meaningful_iterations = args.max_attempts
++    for name in ("max_attempts", "max_model_calls", "max_meaningful_iterations", "max_guidance_groups", "max_excerpts_per_group", "repetitions", "max_tokens",
+                  "convergence_min_unique_syntheses"):
+         if getattr(args, name) < 1:
+             ap.error(name.replace("_", "-") + " must be positive")
+     if args.convergence_duplicate_limit < 0:
+         ap.error("--convergence-duplicate-limit must be nonnegative (0 disables)")
++    if args.max_latency_regression_cycles < 0:
++        ap.error("--max-latency-regression-cycles must be nonnegative")
+     if args.max_guidance_chars < 512:
+         ap.error("--max-guidance-chars must be at least 512")
+     if not math.isfinite(args.temperature) or not 0 <= args.temperature <= 2:
+@@ -1072,7 +1192,8 @@
+         "output": str(output),
+         "runner_sha256": sha256(Path(__file__)),
+         "state_policy": "immutable Golden; promoted-only Current Best; formal vs Golden; PPA vs Current Best",
+-        "latency_changing_support": False,
++        "latency_changing_support": True,
++        "latency_support_scope": "single-clock fixed nonnegative design-level cycle shift; backend-proven against frozen Golden",
+     })
+ 
+     manifest = cal.prepare(output / "inputs")
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=LATENCY_AWARE_CHANGES.patch' '--exclude=EXPORT_MANIFEST.json' nebula_latency_base/phase5_to_9_groq_r3/timing_automation/tests/test_latency_verification.py nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/tests/test_latency_verification.py
+--- nebula_latency_base/phase5_to_9_groq_r3/timing_automation/tests/test_latency_verification.py	1970-01-01 00:00:00.000000000 +0000
++++ nebula_latency_impl/phase5_to_9_groq_r3/timing_automation/tests/test_latency_verification.py	2026-09-13 21:19:45.253972726 +0000
+@@ -0,0 +1,244 @@
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++from design_manifest import DesignManifest, VerificationPolicy
++from latency_contract import build_latency_contract, latency_policy_for_prompt
++from latency_verifier import cycle_exact_result, verify_fixed_latency
++from extract_candidate import extract_optimizer_response
++from source_bundle import SourceBundle
++
++
++def _manifest(root: Path, text: str, *, top: str = "top") -> DesignManifest:
++    root.mkdir(parents=True, exist_ok=True)
++    (root / "top.v").write_text(text, encoding="utf-8")
++    m = DesignManifest(
++        dataset="fixture", design_id="fixture", top=top,
++        source_files=["top.v"], language="verilog",
++        verification=VerificationPolicy(backend="yosys", mode="sequential_equivalence", options={"timeout_s": 120}),
++        source_hashes={},
++    )
++    m.refresh_source_hashes(root)
++    return m
++
++
++def _module_ports():
++    return {
++        "ports": {
++            "clk": {"direction": "input", "bits": [1]},
++            "a": {"direction": "input", "bits": [2, 3, 4, 5]},
++            "y": {"direction": "output", "bits": [6, 7, 8, 9]},
++        }
++    }
++
++
++def _pair(clock=True):
++    return {
++        "baseline": {"edge_signals": ["clk"] if clock else []},
++        "timing_profile": {"clock_port": "clk" if clock else None},
++    }
++
++
++def test_budget_zero_preserves_cycle_exact_contract(tmp_path):
++    m = _manifest(tmp_path, "module top(input clk,input [3:0] a,output reg [3:0] y); always @(posedge clk) y<=a; endmodule\n")
++    c = build_latency_contract(pair=_pair(), manifest=m, base_dir=tmp_path,
++                               elaborated_module=_module_ports(), max_latency_regression_cycles=0)
++    assert c.supported is True
++    assert c.verification_mode == "cycle_exact_existing"
++    assert c.max_latency_regression_cycles == 0
++
++
++def test_positive_latency_budget_requires_existing_clock(tmp_path):
++    m = _manifest(tmp_path, "module top(input [3:0] a,output [3:0] y); assign y=a; endmodule\n")
++    ports = {"ports": {"a": {"direction": "input", "bits": [1,2,3,4]}, "y": {"direction": "output", "bits": [5,6,7,8]}}}
++    c = build_latency_contract(pair=_pair(clock=False), manifest=m, base_dir=tmp_path,
++                               elaborated_module=ports, max_latency_regression_cycles=1)
++    assert c.supported is False
++    assert "no backend-declared reference clock" in (c.reason or "")
++
++
++def test_latency_policy_is_golden_relative(tmp_path):
++    m = _manifest(tmp_path, "module top(input clk,input [3:0] a,output reg [3:0] y); always @(posedge clk) y<=a; endmodule\n")
++    c = build_latency_contract(pair=_pair(), manifest=m, base_dir=tmp_path,
++                               elaborated_module=_module_ports(), max_latency_regression_cycles=2)
++    p = latency_policy_for_prompt(c, current_best_total_latency_regression_cycles=1)
++    assert p["reference"] == "frozen_golden"
++    assert p["max_latency_regression_cycles"] == 2
++    assert p["current_best_total_latency_regression_cycles"] == 1
++    assert p["remaining_latency_headroom_cycles"] == 1
++
++
++def test_temporal_verifier_uses_prediction_only_as_search_hint(tmp_path):
++    gold_dir = tmp_path / "gold"
++    cand_dir = tmp_path / "cand"
++    text = "module top(input clk,input [3:0] a,output reg [3:0] y); always @(posedge clk) y<=a; endmodule\n"
++    gm = _manifest(gold_dir, text)
++    cm = _manifest(cand_dir, text)
++    contract = build_latency_contract(pair=_pair(), manifest=gm, base_dir=gold_dir,
++                                      elaborated_module=_module_ports(), max_latency_regression_cycles=2)
++
++    calls = []
++    def fake_run(command, log, timeout):
++        shift = int(Path(log).parent.name.split("_")[-1])
++        calls.append(shift)
++        Path(log).write_text("proof did fail\n" if shift != 1 else "SUCCESS\n", encoding="utf-8")
++        return {"exit_code": 0 if shift == 1 else 1, "status": "passed" if shift == 1 else "failed", "log": str(log)}
++
++    result = verify_fixed_latency(
++        golden_manifest=gm, golden_base_dir=gold_dir,
++        candidate_manifest=cm, candidate_base_dir=cand_dir,
++        elaborated_golden_module=_module_ports(), contract=contract,
++        output_dir=tmp_path / "proof", yosys_exe="yosys", run_command=fake_run,
++        current_best_total_latency_regression_cycles=0,
++        predicted_latency_change_cycles=2,
++    )
++    # Prediction 2 is tried first, but backend continues and discovers the true +1 relation.
++    assert calls[:2] == [2, 0] or calls[:2] == [2, 0]
++    assert 1 in calls
++    assert result["status"] == "verified"
++    assert result["verified_total_latency_regression_cycles"] == 1
++    assert result["prediction_error_cycles"] == -1
++
++
++def test_temporal_verifier_distinguishes_over_budget_equivalence(tmp_path):
++    gold_dir = tmp_path / "gold"
++    cand_dir = tmp_path / "cand"
++    text = "module top(input clk,input [3:0] a,output reg [3:0] y); always @(posedge clk) y<=a; endmodule\n"
++    gm = _manifest(gold_dir, text)
++    cm = _manifest(cand_dir, text)
++    contract = build_latency_contract(pair=_pair(), manifest=gm, base_dir=gold_dir,
++                                      elaborated_module=_module_ports(), max_latency_regression_cycles=1)
++
++    def fake_run(command, log, timeout):
++        shift = int(Path(log).parent.name.split("_")[-1])
++        Path(log).write_text("SUCCESS\n" if shift == 2 else "proof did fail\n", encoding="utf-8")
++        return {"exit_code": 0 if shift == 2 else 1, "status": "passed" if shift == 2 else "failed", "log": str(log)}
++
++    result = verify_fixed_latency(
++        golden_manifest=gm, golden_base_dir=gold_dir,
++        candidate_manifest=cm, candidate_base_dir=cand_dir,
++        elaborated_golden_module=_module_ports(), contract=contract,
++        output_dir=tmp_path / "proof", yosys_exe="yosys", run_command=fake_run,
++        current_best_total_latency_regression_cycles=0,
++        predicted_latency_change_cycles=2,
++    )
++    assert result["status"] == "latency_budget_exceeded"
++    assert result["passed"] is False
++    assert result["verified_total_latency_regression_cycles"] == 2
++
++
++def test_cycle_exact_result_taxonomy():
++    assert cycle_exact_result({"status": "passed"})["status"] == "verified"
++    assert cycle_exact_result({"status": "timeout"})["status"] == "inconclusive_timeout"
++    # A bare historical "unproven" result is ambiguous; do not blame the RTL.
++    assert cycle_exact_result({"status": "unproven"})["status"] == "tool_failure"
++
++
++def test_positive_latency_contract_tracks_negedge_clock(tmp_path):
++    text = "module top(input clk,input [3:0] a,output reg [3:0] y); always @(negedge clk) y<=a; endmodule\n"
++    m = _manifest(tmp_path, text)
++    c = build_latency_contract(pair=_pair(), manifest=m, base_dir=tmp_path,
++                               elaborated_module=_module_ports(), max_latency_regression_cycles=1)
++    assert c.supported is True
++    assert c.clock_edge == "negedge"
++
++
++def test_positive_latency_contract_rejects_mixed_clock_edges(tmp_path):
++    text = (
++        "module top(input clk,input [3:0] a,output reg [3:0] y); "
++        "always @(posedge clk) y<=a; always @(negedge clk) y<=a; endmodule\n"
++    )
++    m = _manifest(tmp_path, text)
++    c = build_latency_contract(pair=_pair(), manifest=m, base_dir=tmp_path,
++                               elaborated_module=_module_ports(), max_latency_regression_cycles=1)
++    assert c.supported is False
++    assert "multiple active edges" in (c.reason or "")
++
++
++def test_schema_32_candidate_parses_without_backend_identity_echo(tmp_path):
++    m = _manifest(tmp_path, "module top(input clk,input [3:0] a,output reg [3:0] y); always @(posedge clk) y<=a; endmodule\n")
++    bundle = SourceBundle.from_manifest(m, tmp_path, verify_manifest_hashes=True)
++    payload = {
++        "schema_version": "3.2",
++        "decision": "propose_candidate",
++        "editing_base": "current_best",
++        "optimization_class": "pipelining",
++        "chosen_pattern_id": "pipeline.insert_stage",
++        "target_unit_id": "whole_design",
++        "rationale": "split critical logic with an existing clock",
++        "predicted_wns_gain_ns": 0.1,
++        "predicted_area_change_pct": 1.0,
++        "predicted_power_change_pct": 1.0,
++        "predicted_latency_change_cycles": 1,
++        "sequential_changes": [{"kind": "pipeline_register", "clock_domain": "clk", "rationale": "timing"}],
++        "self_checks": {
++            "interface_unchanged": True,
++            "parameters_unchanged": True,
++            "latency_policy_considered": True,
++            "clock_reset_behavior_unchanged": True,
++            "uses_only_permitted_clock_reset_domains": True,
++            "intentional_sequential_changes_declared": True,
++            "source_bundle_targets_valid": True,
++            "no_new_latches": True,
++            "no_new_clock_domains": True
++        },
++        "source_files": [{"target_file": "top.v", "verilog": (tmp_path / "top.v").read_text()}]
++    }
++    parsed = extract_optimizer_response(json.dumps(payload), bundle=bundle)
++    assert parsed.editing_base == "current_best"
++    assert parsed.payload["predicted_latency_change_cycles"] == 1
++    assert "editing_base_identity" not in parsed.payload
++
++
++def test_ppa_gate_rejects_unpassed_latency_before_metrics():
++    from evaluate_candidate import assess_guided_candidate
++    out = assess_guided_candidate(
++        {}, {}, {"status": "passed"},
++        {
++            "max_area_regression_pct": 0.5,
++            "max_power_regression_pct": 0.5,
++            "max_setup_slack_regression_ns": 0.01,
++            "max_hold_slack_regression_ns": 0.01,
++        },
++        comparison_reference="current_best.epoch_000",
++        latency_result={"status": "latency_budget_exceeded", "passed": False},
++    )
++    assert out["keep"] is False
++    assert out["comparable"] is False
++    assert out["reason"] == "latency_policy_failed"
++
++
++def test_unsupported_latency_contract_advertises_zero_effective_headroom(tmp_path):
++    m = _manifest(tmp_path, "module top(input [3:0] a,output [3:0] y); assign y=a; endmodule\n")
++    ports = {"ports": {"a": {"direction": "input", "bits": [1,2,3,4]}, "y": {"direction": "output", "bits": [5,6,7,8]}}}
++    c = build_latency_contract(pair=_pair(clock=False), manifest=m, base_dir=tmp_path,
++                               elaborated_module=ports, max_latency_regression_cycles=2)
++    p = latency_policy_for_prompt(c, current_best_total_latency_regression_cycles=0)
++    assert c.supported is False
++    assert p["max_latency_regression_cycles"] == 2
++    assert p["effective_max_latency_regression_cycles"] == 0
++    assert p["remaining_latency_headroom_cycles"] == 0
++
++
++def test_no_bounded_shift_proven_is_not_mislabeled_as_global_semantic_failure(tmp_path):
++    gold_dir = tmp_path / "gold"
++    cand_dir = tmp_path / "cand"
++    text = "module top(input clk,input [3:0] a,output reg [3:0] y); always @(posedge clk) y<=a; endmodule\n"
++    gm = _manifest(gold_dir, text)
++    cm = _manifest(cand_dir, text)
++    contract = build_latency_contract(pair=_pair(), manifest=gm, base_dir=gold_dir,
++                                      elaborated_module=_module_ports(), max_latency_regression_cycles=1)
++
++    def fake_run(command, log, timeout):
++        Path(log).write_text("proof did fail\n", encoding="utf-8")
++        return {"exit_code": 1, "status": "failed", "log": str(log)}
++
++    result = verify_fixed_latency(
++        golden_manifest=gm, golden_base_dir=gold_dir,
++        candidate_manifest=cm, candidate_base_dir=cand_dir,
++        elaborated_golden_module=_module_ports(), contract=contract,
++        output_dir=tmp_path / "proof", yosys_exe="yosys", run_command=fake_run,
++    )
++    assert result["status"] == "no_allowed_latency_relation"
++    assert result["formal_status"] == "no_allowed_latency_relation"

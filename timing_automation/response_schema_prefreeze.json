@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nebula.local/schemas/optimizer_response_prefreeze.schema.json",
+  "title": "nEBULA Pre-Freeze Optimizer Response",
+  "description": "One optimizer decision: either one complete-source RTL candidate based on exactly one backend-supplied editing base, or an advisory no-further-optimization recommendation.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/candidate_response"
+    },
+    {
+      "$ref": "#/$defs/stop_response"
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+    "candidate_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "decision",
+        "editing_base",
+        "chosen_pattern_id",
+        "target_unit_id",
+        "source_files",
+        "rationale",
+        "predicted_wns_gain_ns",
+        "predicted_area_change_pct",
+        "predicted_power_change_pct",
+        "self_checks"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "3.1"
+        },
+        "decision": {
+          "type": "string",
+          "const": "propose_candidate"
+        },
+        "editing_base": {
+          "type": "string",
+          "enum": [
+            "golden",
+            "current_best"
+          ],
+          "description": "Source snapshot used only to construct/materialize this candidate. The backend resolves the exact selected snapshot and per-file hashes; the model must not echo backend identity/hash fields. Formal still compares against Golden and PPA still compares against Current Best."
+        },
+        "chosen_pattern_id": {
+          "description": "Optimization pattern/family used by the candidate. Exploratory rewrites may use null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_unit_id": {
+          "type": "string",
+          "const": "whole_design",
+          "description": "Diagnostic whole-design unit identifier for this runner; it is not an edit boundary."
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "predicted_wns_gain_ns": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Advisory model estimate only."
+        },
+        "predicted_area_change_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Advisory model estimate; negative means smaller."
+        },
+        "predicted_power_change_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Advisory model estimate; negative means lower."
+        },
+        "self_checks": {
+          "$ref": "#/$defs/self_checks"
+        },
+        "source_files": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Every source file in the selected editing base exactly once, with complete candidate text. Backend resolves the selected snapshot and validates the returned file set; no identity/hash echo fields are required from the model.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "target_file",
+              "verilog"
+            ],
+            "properties": {
+              "target_file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "verilog": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Complete compilable Verilog file. No omissions, placeholders, patches, or Markdown fences."
+              }
+            }
+          }
+        }
+      }
+    },
+    "stop_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "decision",
+        "rationale"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "3.1"
+        },
+        "decision": {
+          "type": "string",
+          "const": "no_further_optimization"
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Advisory explanation. Nebula independently decides whether convergence is sufficient to stop."
+        }
+      }
+    },
+    "self_checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interface_unchanged",
+        "parameters_unchanged",
+        "latency_unchanged",
+        "clock_reset_behavior_unchanged",
+        "source_bundle_targets_valid",
+        "no_new_latches",
+        "no_new_clock_domains"
+      ],
+      "properties": {
+        "interface_unchanged": {
+          "type": "boolean"
+        },
+        "parameters_unchanged": {
+          "type": "boolean"
+        },
+        "latency_unchanged": {
+          "type": "boolean"
+        },
+        "clock_reset_behavior_unchanged": {
+          "type": "boolean"
+        },
+        "source_bundle_targets_valid": {
+          "type": "boolean"
+        },
+        "no_new_latches": {
+          "type": "boolean"
+        },
+        "no_new_clock_domains": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$comment": "Pre-freeze schema: complete source bundles; model chooses Golden or Current Best editing base; model stop is advisory; backend owns duplicate/formal/synthesis/convergence/PPA truth."
+}

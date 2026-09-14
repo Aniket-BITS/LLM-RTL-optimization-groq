@@ -1,0 +1,1812 @@
+--- a/OPERATING_COMMANDS.md
++++ b/OPERATING_COMMANDS.md
+@@ -1,99 +1,90 @@
+-# Operating the separate Groq complete-Verilog version
++# Operating Groq r3
+ 
+-Use an Ubuntu WSL terminal. The commands below are instructions for future use; only the pure-Python self-test was executed after the full-Verilog change.
+-
+-## 1. Open the version and load its environment
++Run commands in Ubuntu WSL:
+ 
+ ```bash
+-cd ~/OpenROAD-flow-scripts/flow/versions/phase5_to_9_groq_r2
+-source ./env.sh
+-```
+-
+-This selects this version's Python environment, Groq model, Yosys/OpenROAD paths, and four worker threads. `nebula.sh` also loads the environment automatically. Your existing `.env.local` supplies `GROQ_API_KEY`; keep it private.
+-
+-## 2. Self-test only — no design run, no API call
+-
+-```bash
++cd ~/OpenROAD-flow-scripts/flow/versions/phase5_to_9_groq_r3
+ ./nebula.sh self-test
+ ```
+ 
+-This checks the complete-source JSON contract, byte preservation, file membership, hashes, protected-line checks, unit identity, and mocked provider errors. It does not read Verilog files or launch EDA tools. The broader `test` and `smoke` commands do execute RTL fixtures; do not use them when you want self-test only.
++Self-test checks response/source contracts and the new guidance fixtures without reading design RTL, launching EDA tools, or making API calls. `rtl-opt-groq --self-test` additionally uses a temporary source-bundle fixture with mocked lint. Live commands below require `GROQ_API_KEY` from the private `.env.local` or the shell environment.
+ 
+-## 3. Full automatic run — execute only when ready
+-
+-For the configured `mapper_reconvergent_test` benchmark, start with a fresh baseline:
++## Guided or automatic mode
+ 
+ ```bash
+-./nebula.sh e2e
++./nebula.sh rtl-opt-groq \
++  --pairs adder comparator_8bit \
++  --optimizer-mode guided \
++  --guidance-source timing-report \
++  --max-area-regression-pct 0.5 \
++  --max-power-regression-pct 0.5 \
++  --min-setup-slack-delta-ns 0.0 \
++  --min-hold-slack-delta-ns 0.0 \
++  --max-guidance-groups 3 \
++  --max-excerpts-per-group 2 \
++  --max-guidance-chars 6000
+ ```
+ 
+-Or reuse the previously qualified baseline; current source provenance is checked and the optimizer input is rebuilt for response schema 3.0:
++Replace `guided` with `auto` for automatic evidence selection (the default), or `exploratory` to explicitly omit mapping/classification advice. Explicit `guided` still falls back when evidence is insufficient. `--pairs` accepts space-separated corpus design IDs and defaults to the first ten entries. `--max-attempts` defaults to 3; `--repetitions` defaults to 1 and also works for single-mode experiments.
++
++`--max-guidance-chars` limits the serialized advisory JSON only, including compact historical feedback. It must be at least 512. Lower-ranked path groups, source excerpts, and older feedback are removed in that order. If the remaining guidance cannot fit, the prompt becomes exploratory. The full source, source identity, contract, response schema, and user budgets are always retained; a large source can still exceed provider context capacity and will be recorded as a provider failure. All group/excerpt/attempt/repetition limits must be positive.
++
++Area and power limits are maximum permitted regression percentages. Setup/hold values are minimum candidate-minus-baseline slack changes in ns; negative values explicitly permit that much regression, while absolute timing-clean gates remain mandatory. Defaults are 0.5%, 0.5%, 0 ns, and 0 ns. Metrics must be finite and recipe identities must match. Acceptance additionally requires at least 1% improvement in area or power, or 0.01 ns in setup slack. Both the first measurement and repeat confirmation must pass.
++
++## Controlled paired experiment
+ 
+ ```bash
+-./nebula.sh e2e \
+-  --resume-baseline groq_r2_qualified_v2_20260912_000110_b6243e \
+-  --max-attempts 3
++./nebula.sh rtl-opt-groq \
++  --experiment paired-guidance \
++  --pairs adder comparator_8bit \
++  --repetitions 3 --max-attempts 3 \
++  --max-area-regression-pct 0.5 \
++  --max-power-regression-pct 0.5 \
++  --min-setup-slack-delta-ns 0.0 \
++  --min-hold-slack-delta-ns 0.0
+ ```
+ 
+-These commands call Groq and run candidate structural checks, sequential equivalence, final routing, and PPA evaluation. Each run creates a new `ai_runs/groq_attempts_<timestamp>/` directory. The benchmark's configured manifest and physical recipe are under `ai_runs/`; retain `golden_manifest.json` and `recipe_spec.json` for future runs.
++The paired entry point controls arm mode itself. It shares the selected golden baseline per design/repetition, runs both arms with identical model settings and user budgets, and alternates their order. Each arm starts its own independent history. Both synthesis and physical run names are unique to the experiment/arm/repetition. It does not promote changes into the original RTL.
+ 
+-## 4. Operate one stage at a time
++Use `--output /absolute/path/to/new_experiment` to choose a new directory. Existing directories are refused. Otherwise a UTC timestamp plus unique ID is used under this version's `ai_runs`.
+ 
+-Rebuild analysis/optimizer input for the qualified baseline and the new complete-source contract:
++```text
++ai_runs/<experiment_id>/
++  config.json
++  inputs/                         # imported immutable corpus sources
++  baselines/repetition_01/<id>/    # shared baseline selection evidence
++  guided/repetition_01/<id>/
++  exploratory/repetition_01/<id>/
++  groq_summary.json
++  experiment_summary.json
++  experiment_report.md
++```
++
++Single-mode runs use the selected mode's directory and the same repetition/design layout. Additional repetitions have their own `repetition_02`, `repetition_03`, etc.
++
++## Per-design and per-attempt output
++
++Each design has `golden_manifest.json`, the copied golden source, `baseline_guidance.json`, `result.json`, and `attempt_XX/` directories. Each repetition also has `groq_summary.json`.
++
++An attempt records:
++
++- `request.json`: source-bound request, effective mode, active budgets, and compact guidance.
++- `prompt.json`: exact system/user strings and advisory compaction decisions.
++- `guidance_full.json` and `guidance.json`: full packet before prompt compaction and the effective packet, both using `guidance_packet/1`.
++- `groq_candidate.json`, `lint.json`, `candidate/`, and `formal/`: response, validation, complete candidate source bundle, and proof artifacts when those stages run.
++- `paired_recipe/`: frozen physical recipe, synthesis results, normalized baseline/candidate hash JSON, and physical logs.
++- `next_guidance.json` and `next_guidance/`: fresh candidate diagnosis after comparable PPA. Diagnostic directories include parsed timing, RTL graph, mapped paths, and classified paths where available.
++- `feedback.json` and `history.json`: structured outcome, reported transformation family, evidence fingerprint, comparable flag, and measured deltas. Infrastructure failures do not reject a family. A family is recorded only from an explicit candidate `chosen_pattern_id`; no family is guessed from the benchmark name.
++
++`result.json` uses `groq_result/3`. Each attempt has `guidance`, `prompt_artifact`, `synthesis_no_op`, `ppa_deltas`, `transformation_family_history`, and `retry_feedback`. Promotion and repeat-promotion records retain exact policy checks; absent PPA metrics are not predictions or zeros. Hash failures are recorded and PPA proceeds. An equal valid hash produces `no_op_after_synthesis` and no PPA metrics.
++
++## Offline comparison report
+ 
+ ```bash
+-VARIANT=groq_r2_qualified_v2_20260912_000110_b6243e
+-./nebula.sh analysis \
+-  --design mapper_reconvergent_test \
+-  --variant "$VARIANT" --resume --force-stage optimizer_input
++./nebula.sh report-guided-experiment \
++  "$PWD/ai_runs/<experiment_id>"
+ ```
+ 
+-Build recommendations and a new request (do not reuse an old patch-output request):
++This reads result/config JSON only and writes `experiment_summary.json` and `experiment_report.md`. It requires neither Groq credentials nor EDA execution.
+ 
+-```bash
+-python timing_automation/filter_patterns.py \
+-  --optimizer-input "ai_runs/${VARIANT}_optimizer_input.json" \
+-  --unit-id unit_000 \
+-  --output ai_runs/full_verilog_patterns.json
+-
+-./nebula.sh build-request \
+-  --optimizer-input "ai_runs/${VARIANT}_optimizer_input.json" \
+-  --unit-id unit_000 \
+-  --eligible ai_runs/full_verilog_patterns.json \
+-  --golden-manifest ai_runs/golden_manifest.json \
+-  --golden-base-dir "$PWD" \
+-  --output ai_runs/full_verilog_request.json
+-
+-./nebula.sh preflight \
+-  --request ai_runs/full_verilog_request.json \
+-  --completion-reserve 4096
+-```
+-
+-Generate and evaluate one complete-Verilog candidate:
+-
+-```bash
+-TAG="full_verilog_$(date +%Y%m%d_%H%M%S)"
+-./nebula.sh optimize \
+-  --request ai_runs/full_verilog_request.json \
+-  --golden-manifest ai_runs/golden_manifest.json \
+-  --golden-base-dir "$PWD" \
+-  --physical-recipe ai_runs/physical_recipe.json \
+-  --baseline-metrics ai_runs/baseline_metrics.json \
+-  --flow-dir "$PWD" \
+-  --ai-runs "$PWD/ai_runs" \
+-  --tag "$TAG" \
+-  --model openai/gpt-oss-120b \
+-  --max-tokens 4096 --reasoning-effort medium --temperature 0
+-```
+-
+-Add `--no-orfs` to the final command to omit physical implementation; it still calls Groq and runs lint and formal verification. It is not a self-test-only command.
+-
+-## Outputs
+-
+-- `<tag>.candidate.json`: model response, with `schema_version: "3.0"` and complete text for every file in `source_files[].verilog`.
+-- `<tag>.candidate.v`: standalone complete Verilog for a single-source design, created after structural validation. It is a candidate, not proof of promotion.
+-- `<tag>_sources/`: exact complete source files and their candidate manifest after structural validation; use the manifest for multi-file designs.
+-- `<tag>.lint.json`, `.verify.json`, `.metrics.json`, `.evaluation.json`, `.result.json`: stage results. Later files exist only when their stage runs.
+-- `closure_results.json`: automatic loop summary inside its timestamped attempt directory.
+-
+-A rejection is a valid result. The original RTL remains unchanged. Full-source schema 3.0 has passed response-handling self-tests only; it has not been tested against a Verilog design, a live Groq response, formal verification, or physical implementation since this change, as requested.
++Reports include aggregate and per-design call counts, lint/formal pass rates, no-op and comparable-PPA rates, accepted-candidate rates, calls per accepted candidate, fallback rates, metric medians, best deltas, and incomplete-pair status. Call-based rates include failed attempted API calls. Fallback rates count only guidance-enabled attempts; explicit exploratory arms have no fallback denominator. Metric summaries use comparable first PPA measurements, including rejected candidates; repeat confirmation determines acceptance. Null denotes no observations, not zero. Area/power deltas are candidate-minus-baseline percentages (lower is better); setup/hold deltas are candidate-minus-baseline ns (higher is better).
+--- a/README_GROQ.md
++++ b/README_GROQ.md
+@@ -1,41 +1,38 @@
+-# NEBULA phase 5–9: separate Groq r2 version
++# NEBULA Groq r3: optional evidence-backed guidance
+ 
+-This version lives under `flow/versions/phase5_to_9_groq_r2`. Existing versions and original RTL are preserved. It has its own Python environment, benchmark configuration, analysis artifacts, and physical output directories. ORFS scripts, installed EDA tools, and platform data are shared read-only dependencies; this is not a standalone ORFS installation.
++This version is at `flow/versions/phase5_to_9_groq_r3`, derived from `phase5_to_9_groq_r2`. The original version and source RTL are preserved. Old experiment outputs were not copied.
+ 
+-## Run in WSL
++The `rtl-opt-groq` runner offers `auto` (default), `guided`, and `exploratory`. Both `auto` and `guided` attempt timing-backed diagnosis and degrade safely according to the evidence:
++
++| Evidence | Prompt state |
++|---|---|
++| High-confidence, hash-verified mapping and high/medium-confidence classification | `guided` |
++| High-confidence mapping without reliable classification | `guided_evidence_only` |
++| Missing, ambiguous, unsupported, or low-confidence mapping | `exploratory` |
++| Diagnostic exception, malformed data, or exhausted advisory budget | `exploratory`, with a persisted reason |
++
++Guidance is advisory. It never gates source validation, Groq, formal equivalence, or physical evaluation. A graph-builder timeout is recorded as failed guidance. Only exact source hashes and complete trusted source regions qualify as mapping evidence. Reconvergent cones without resolved attribution remain exploratory. Classification is structural evidence, not proof that one RTL operator causes the physical delay. No carry-preservation, subtraction-avoidance, or design-ID-based architecture rules are added.
++
++Each design selects a setup/hold-clean baseline clock period. The first diagnosis comes from that selected run. Every comparable candidate PPA run produces the next diagnosis, including a rejected candidate. That diagnosis carries its candidate source identity; candidate source line numbers are not golden-source line numbers. Attempts still propose complete replacements against the immutable golden SourceBundle. Without a new comparable PPA result, the latest identified measured implementation remains the diagnosis.
++
++The exact system/user prompt, full and compact guidance, source identity, budget decisions, retry outcomes, and measured deltas are saved per attempt. Timing reports are parsed by the existing parser; the existing RTL graph mapper and classifier supply evidence. The old raw report excerpt is retained only in baseline diagnostic artifacts and is excluded from prompts.
++
++After lint, elaboration, and formal proof, both implementations run the same frozen synthesis recipe. Valid equal normalized post-synthesis hashes produce `no_op_after_synthesis`, skip global-route PPA, and request a materially different implementation strategy. Hash normalization conservatively preserves names, bit IDs, connectivity, cell parameters, and initialization while removing source-location metadata. Consequently it can miss renamed no-ops; it does not treat matching cell counts as matching implementations. Missing hashes never trigger a PPA skip.
++
++Acceptance uses measured same-recipe metrics and the user's area, power, setup, and hold limits. Both designs must be timing-clean. The existing measurable-improvement threshold remains: at least 1% area improvement, 1% power improvement, or 0.01 ns setup-slack improvement. Provisional acceptance is confirmed by a repeated baseline/candidate comparison under the same budgets. Model predictions never enforce acceptance. Vectorless power remains the existing flow's estimate.
++
++Paired experiments share baseline period selection for each design/repetition, isolate both arms' physical output names, use identical model/settings/budgets, and alternate arm order between repetitions. Existing output directories are refused. This prevents runner overwrites; it is not an operating-system write lock. Repetitions measure provider/run variability; identical model settings do not guarantee deterministic outputs.
++
++## Local setup and validation
+ 
+ ```bash
+-cd ~/OpenROAD-flow-scripts/flow/versions/phase5_to_9_groq_r2
+-./nebula.sh doctor
++cd ~/OpenROAD-flow-scripts/flow/versions/phase5_to_9_groq_r3
+ ./nebula.sh self-test
+-# Fresh baseline plus up to three Groq attempts:
+-./nebula.sh e2e
+-# Reuse the verified baseline and run a new set of attempts:
+-./nebula.sh e2e --resume-baseline groq_r2_qualified_v2_20260912_000110_b6243e
++./nebula.sh rtl-opt-groq --help
+ ```
+ 
+-The launcher loads `env.sh` and the private `.env.local`, then changes to this version's directory. `GROQ_API_KEY` is stored only in `.env.local`, excluded from Git, with owner-only permissions. Do not include that file in a transfer. The model defaults to `openai/gpt-oss-120b`. The live loop uses 4096 completion tokens, medium reasoning, temperature zero, and at most three candidate flows. Each loop gets a new timestamped output directory.
++The local `.venv` reuses r2's installed Python environment through a symlink, and `.env.local` links to the existing private r2 configuration without duplicating its contents. ORFS scripts, platforms, external corpus, and installed EDA tools remain shared dependencies. `env.sh` loads this version's private `.env.local` when present, or accepts an exported `GROQ_API_KEY`. Private keys and old run outputs are excluded from the version's change artifacts. This is a versioned runner checkout, not a standalone ORFS distribution.
+ 
+-`requirements.lock.txt` records installed Python packages. `VERSION.json` records the input archive hash. `BUG_FIXES.patch` records package changes.
++Validation covers pure-Python fixtures, mocked runner paths, and syntax. No live Groq, formal, or PPA run was performed for r3. The inherited `e2e`/closure commands are separate workflows; the new guidance controls belong to `rtl-opt-groq`.
+ 
+-## Benchmark and comparison
+-
+-The selected benchmark is `mapper_reconvergent_test`, Nangate45, a 0.8 ns clock. Its copied configuration freezes die/core geometry, placement density, four worker threads, and the same hold-repair hook for baseline and candidates. Original clock-only constraints did not meet optimizer qualification. This version explicitly models zero external input/output delays as a local benchmark assumption; this is not board-level timing signoff. The original source RTL is unchanged.
+-
+-The generated SDC is bound byte-for-byte to the manifest constraint model. Retain `ai_runs/golden_manifest.json`, `ai_runs/recipe_spec.json`, and the copied benchmark inputs: the runner uses them for new runs. Physical recipes hash the shared flow dependencies. Baselines and candidates are evaluated at the final implementation stage.
+-
+-The closure target is 0.005 ns above the baseline's setup slack so the loop attempts an improvement even though the baseline is already timing-clean. The unchanged promotion policy allows no timing, area, or power regression. A completed run can legitimately accept no candidate.
+-
+-Formal results retain the package's `proven_bounded` label for Yosys sequential induction at depth 5. Do not relabel them as `proven_complete`. Advanced select/case attribution runs only when analysis finds ambiguity; the chosen benchmark did not require those conditional stages.
+-
+-## Fixes
+-
+-- Use the configured Groq model in the closure driver instead of its former ChipSeek default.
+-- Default optimizer input construction to the packaged prompt policies; otherwise analysis produced a request that rendering could not use.
+-- Convert absolute diagnostic file paths to the canonical SourceBundle path after verifying unique module ownership and SHA-256 identity; preserve strict validator checks.
+-- Report an empty Groq completion-choice list as a provider error instead of indexing it.
+-- Add isolated environment/launch commands and a full-run driver; add regression checks for provider responses and source path identity.
+-
+-The default response is now schema 3.0: complete Verilog in `source_files`, with a standalone `.candidate.v` for a structurally accepted single-source candidate. Legacy patch responses are retained for historical replay only.
+-
+-See `OPERATING_COMMANDS.md` for current commands. Only pure-Python self-tests have been run after the complete-Verilog change; no RTL/EDA or live Groq validation of that new format has been performed.
++See `OPERATING_COMMANDS.md` for commands and artifacts, and `VALIDATION.md` for review notes and known limits.
+--- /dev/null
++++ b/VALIDATION.md
+@@ -0,0 +1,34 @@
++# r3 validation and implementation review
++
++Created as a separate `phase5_to_9_groq_r3` directory. No r2 program, original RTL, or existing experiment output was edited. Runtime dependencies and private configuration are shared through symlinks; their contents are not part of the review patch.
++
++## Results
++
++- `./nebula.sh self-test`: passed the existing source/response contracts and 22 new pure-Python fixture tests.
++- Targeted pytest: 23 passed (the 22 new fixtures plus the existing mocked Groq-provider regression).
++- Changed Python files: AST syntax checks passed. Launcher/environment shell syntax checks passed.
++- The runner's temporary-file `--self-test` also passed with mocked lint and mocked timing/mapping/classification/PPA paths.
++- No live Groq, external formal, synthesis, or PPA execution was used for validation. No measured optimization benefit is claimed.
++
++See `SELF_TEST_RESULTS.txt`, `PYTEST_RESULTS.txt`, and `RUNNER_SELF_TEST_RESULTS.txt` for captured output. `GUIDED_CHANGES.patch` contains the program/documentation changes relative to r2. `VERSION.json` records source/new program hashes.
++
++## Validation-driven adjustments to the plan
++
++1. Added `guided_evidence_only` to the real lint request validator. Without this compatibility change, valid evidence-only requests would fail before evaluation.
++2. Split the existing physical helper into a selectable synthesis stage and its normal global-route stage, with a directory-derived namespace. This enables pre-PPA netlist comparison and prevents paired arms/repetitions from overwriting each other's physical artifacts.
++3. Reused parser, mapper, and classifier public functions unchanged through `guidance_packet.py`. Reused the existing generic operator signature and added generic family-ID normalization in `build_optimizer_input.py`. No design-name heuristics or architecture constraints were introduced.
++4. Added an explicit graph-builder timeout. Mapping/classification/serialization failures become persisted exploratory fallback. A classifier's generic/unclassified/empty structural result is not promoted into a recommendation.
++5. Kept the existing measurable-improvement threshold and repeat-confirmation requirement while adding user-selected area, power, setup, and hold budgets. The shared metric-delta implementation is reused; policy boundaries use unrounded measurements.
++6. Baseline selection compares the golden source with itself for elaboration. Paired arms share that golden-selected period per design/repetition and alternate execution order. They have independent proposal histories and uniquely named physical runs.
++7. Normalized synthesis hashing is intentionally conservative: source metadata is removed, while exact named connectivity, initialization, and parameters remain. Renamed but equivalent synthesized implementations can escape no-op detection and still receive PPA. Missing or malformed hashes never cause a skip.
++8. Prompt caps apply to advisory JSON, not the mandatory full-source/contract sections. If the full protected prompt exceeds a provider limit, the attempted call is recorded as a provider failure. The exact submitted strings and compaction decisions are retained.
++
++## Covered failure and policy cases
++
++Fixtures exercise all three effective prompt states, malformed timing, mapper/classifier crashes, untrusted source ranges, source-preserving prompt trimming, generic feedback without invented families, infrastructure exclusions from rejected-family history, hash connectivity/initialization sensitivity, missing-hash non-equality, synthesis-only no-op skips, immutable paired directories, unique physical namespaces, shared paired baselines, candidate-guidance refresh, no refresh after incomparable PPA, lint feedback, repeat-budget rejection, and missing-data experiment aggregation.
++
++The new test module uses opaque in-memory source strings and JSON/report/text fixtures. It does not read or write design RTL or launch EDA/API tools. The separate runner self-test retains the requested temporary source-bundle exercise, with lint mocked.
++
++## Remaining empirical validation
++
++A live controlled experiment is still needed to establish guidance coverage, synthesis-hash hit rate, realized PPA benefit, and cost per accepted candidate on this corpus. The offline reporter explicitly exposes missing comparisons and uses null for absent observations. It makes no statistical-significance or causal-benefit claim.
+--- a/VERSION.json
++++ b/VERSION.json
+@@ -1,25 +1,79 @@
+ {
+-  "version": "phase5_to_9_groq_r2",
+-  "source_archive": "nebula_phase5_to_9_guided_exploratory_r2.zip",
+-  "source_archive_sha256": "71e0d434186cbad64458c86b95e5d08cd2bcf746bc283c988d2d7d1ba39b0eaa",
+-  "model": "openai/gpt-oss-120b",
++  "changed_files": [
++    "timing_automation/build_optimizer_input.py",
++    "timing_automation/build_rtl_graph.py",
++    "timing_automation/calibrate_pairs_v3.py",
++    "timing_automation/evaluate_candidate.py",
++    "timing_automation/guidance_packet.py",
++    "timing_automation/lint_candidate.py",
++    "timing_automation/optimizer_history.py",
++    "timing_automation/prompt_renderer.py",
++    "timing_automation/report_guided_experiment.py",
++    "timing_automation/run_rtl_opt_groq.py",
++    "timing_automation/test_guided_rtl_opt.py",
++    "timing_automation/yosys_structure.py",
++    "self_test.py",
++    "nebula.sh",
++    "README_GROQ.md",
++    "OPERATING_COMMANDS.md"
++  ],
++  "created_utc_date": "2026-09-13",
++  "default_optimizer_mode": "auto",
++  "derived_from": "phase5_to_9_groq_r2",
++  "guidance_schema": "guidance_packet/1",
++  "new_file_sha256": {
++    "OPERATING_COMMANDS.md": "2359d20490b3220b9421dfb044294d0807f8a9edf3358015a7b7e6829b40203e",
++    "README_GROQ.md": "f7a2ccca59b0df9856fc7745e862bee71c9aeec8e1534ed59b223d457c7b3c26",
++    "nebula.sh": "cfb6591572c7d4b32451d6e7812daed035efc4d8363017dbe8751874d9404130",
++    "self_test.py": "28485746f81cc36f1c07ee4053e804c2a1484491fff0db4c21589b4d55f1b5a1",
++    "timing_automation/build_optimizer_input.py": "c652e407e1a17bd15d4bc88364929be5b98a3ffda297413894707513ad0e3349",
++    "timing_automation/build_rtl_graph.py": "abd2c6caac2805bd30d4baad9246f88a4c4d5fa3cba7fe55c64b49d4cb949f86",
++    "timing_automation/calibrate_pairs_v3.py": "f307935bd77e547f979591c9e557ac60fce3a7f8d1bdf85b72b72cfed5f914cc",
++    "timing_automation/evaluate_candidate.py": "d617e903fc3e1e99f4fa029dbe642c121e06dfbb758616aa69a485c9b0c51d51",
++    "timing_automation/guidance_packet.py": "311f3d68a2c9fd44b096ed00bd1c61dcb80724f96dcc599015bceee698607118",
++    "timing_automation/lint_candidate.py": "d231c064046ba52b4c4f40f276e04bee6e991f24659de8c6f00352be07e0f843",
++    "timing_automation/optimizer_history.py": "84125236a293abc6d14c04f96b6afc84be966e87285aa0f37268951d561ca1e3",
++    "timing_automation/prompt_renderer.py": "4e89c2cd0bb6c503ca853422859197c9afae3a6c9c05afdf35ae34c3f10cc5bc",
++    "timing_automation/report_guided_experiment.py": "251d9909dd05852c1d7c49c2cf018e16b99f72144bcf2e5bcbd9fbcc4df6dbc0",
++    "timing_automation/run_rtl_opt_groq.py": "53b38afb74936ca59afdc3544a6396d2393a40c5ac7b787a15fbc866374fe834",
++    "timing_automation/test_guided_rtl_opt.py": "bd3d228b0216e5d189d8e3ece80ffad09cf15c14f8802bc5d356e8d514ee337f",
++    "timing_automation/yosys_structure.py": "5e1b3fef1a31a07959f8756cbf8c40882d6ede7b8784fd8da5a54b65a8453feb"
++  },
++  "old_run_outputs_copied": false,
++  "original_versions_preserved": true,
+   "provider": "groq",
+-  "changed_package_files": [
+-    "timing_automation/run_optimizer.py",
+-    "timing_automation/extract_candidate.py",
+-    "timing_automation/response_schema.json",
+-    "timing_automation/build_optimizer_input.py",
+-    "timing_automation/yosys_structure.py",
+-    "timing_automation/tests/test_yosys_gates.py",
+-    "timing_automation/prompt_context/solver_policy.json",
+-    "timing_automation/prompt_context/safety_policy.json",
+-    "timing_automation/lint_candidate.py",
+-    "timing_automation/build_request.py",
+-    "timing_automation/run_closure_loop.py",
+-    "tools/smoke_test.sh"
++  "response_schema_version": "3.0",
++  "result_schema": "groq_result/3",
++  "shared_local_dependencies": [
++    "r2 Python environment",
++    "r2 private environment configuration",
++    "ORFS scripts and tools",
++    "platforms",
++    "RTL-OPT corpus"
+   ],
+-  "original_versions_preserved": true,
+-  "response_schema_version": "3.0",
+-  "output_format": "complete_verilog",
+-  "latest_validation": "Pure Python self-tests and syntax only; no RTL/EDA or live Groq validation after complete-output change"
++  "source_file_sha256": {
++    "OPERATING_COMMANDS.md": "a0f78908e0b4db0cbcf3ed10d39dd1640485cd18f0b9ac7c1e0b3603c5e0462d",
++    "README_GROQ.md": "870fcbf4f73f97cca8e1d3427a3b9544359ff52870accf65ac39b070a425e486",
++    "nebula.sh": "1cf634f3fada7d41d151d315f7627ba7dd580c86329fcb4e4f8888931cfe8b6d",
++    "self_test.py": "5ef0137340d043b9a0770388167ae5d58cecba9aeec6eaaf380356cf18b3c53a",
++    "timing_automation/build_optimizer_input.py": "5ddc7fe6028c62b55f4622f919c43ec7053c18a4d303300b92394c8e60acfc0e",
++    "timing_automation/build_rtl_graph.py": "949e21b6056fd135f632b7794a6f02cd4bf8ec8b271370a133a63badadf637c7",
++    "timing_automation/calibrate_pairs_v3.py": "80bee2f4a305e4e748bd0a32a8b8fb3d889130aa2b4297cb10b7cf3bdf0ddd93",
++    "timing_automation/evaluate_candidate.py": "7bc4947b17164cce35308564e41444e69d5f065c638139812ff056f4b80914b4",
++    "timing_automation/lint_candidate.py": "6c09c58f5c1f4b3309a31c2b2abefe4b66349a7a71bce8a27b5cb673503ca486",
++    "timing_automation/optimizer_history.py": "3b4d87422f714920d430bca1490c69b4bdaaebef900a276eea07f45e2f6783b3",
++    "timing_automation/prompt_renderer.py": "5aa24b67a3c7036c05f9c36987fa1f9d9ff3523ad18fb2213d53fbbbf348db85",
++    "timing_automation/run_rtl_opt_groq.py": "ac8b9463b9157f4d8251b73d8551732fcf317e3a083d0a36671c41b5bf4c4783",
++    "timing_automation/yosys_structure.py": "10bb9ec544fa7b9befbbbc6d71b76f5a5a5557606a23c6e26e8ab7e2fa600277"
++  },
++  "validation": {
++    "changed_python_syntax": "passed",
++    "formal_run": false,
++    "launcher_shell_syntax": "passed",
++    "live_groq_run": false,
++    "ppa_run": false,
++    "pure_python_guidance_tests": 22,
++    "targeted_pytest_passes": 23
++  },
++  "version": "phase5_to_9_groq_r3"
+ }
+--- a/nebula.sh
++++ b/nebula.sh
+@@ -14,6 +14,7 @@
+  optimize) script=run_optimizer ;;
+  closure) script=run_closure_loop ;;
+  rtl-opt-groq) script=run_rtl_opt_groq ;;
++ report-guided-experiment) script=report_guided_experiment ;;
+  doctor) script=nebula_doctor ;;
+  preflight) script=pre_groq_check ;;
+  build-request) script=build_request ;;
+--- a/self_test.py
++++ b/self_test.py
+@@ -79,6 +79,8 @@
+         else:
+             raise AssertionError("empty provider response accepted")
+     print("PASS: empty provider response handling (mock only)")
++    from test_guided_rtl_opt import run_tests
++    run_tests()
+     print("SELF-TEST PASSED: no RTL files read, no EDA tools started, no API calls")
+     return 0
+ 
+--- a/timing_automation/build_optimizer_input.py
++++ b/timing_automation/build_optimizer_input.py
+@@ -2146,6 +2146,11 @@
+ # Region construction
+ # ---------------------------------------------------------------------------
+ 
++def normalize_transformation_family(value):
++    """Normalize an explicitly supplied family ID without inferring architecture."""
++    return value.strip().lower() if isinstance(value, str) and value.strip() else None
++
++
+ def operator_signature(counts: Dict[str, int]) -> Tuple[Tuple[str, int], ...]:
+     return tuple(sorted((str(k), int(v)) for k, v in counts.items()))
+ 
+--- a/timing_automation/build_rtl_graph.py
++++ b/timing_automation/build_rtl_graph.py
+@@ -177,6 +177,7 @@
+     output_file: Optional[Path] = None,
+     checkpoint: Optional[Path] = None,
+     yosys_path: Optional[str] = None,
++    timeout_s: float = 120,
+ ) -> Tuple[Path, Dict[str, Any]]:
+ 
+     flow_dir = Path(
+@@ -268,6 +269,7 @@
+             text=True,
+             stdout=subprocess.PIPE,
+             stderr=subprocess.STDOUT,
++            timeout=timeout_s,
+         )
+ 
+         if result.returncode != 0:
+--- a/timing_automation/calibrate_pairs_v3.py
++++ b/timing_automation/calibrate_pairs_v3.py
+@@ -167,16 +167,22 @@
+     return recipe, normalized, profile
+ 
+ 
+-def physical(pair, directory, side, recipe, source, label, repeat=0):
++def physical(pair, directory, side, recipe, source, label, repeat=0, stage="grt"):
+     if not recipe.verify_frozen_files()["ok"]:
+         raise ValueError("Frozen recipe mutated")
+     expected = digest(source)
+-    variant = f"calibration_v3_{pair['id']}_{label}_{side}_{repeat}"
++    # The directory binds artifacts to one immutable experiment/arm/repetition.
++    namespace = hashlib.sha256(str(directory.resolve()).encode()).hexdigest()[:16]
++    variant = f"calibration_v3_{pair['id']}_{namespace}_{label}_{side}_{repeat}"
+     result = v2.run(["make", f"DESIGN_CONFIG={directory / 'config.mk'}", f"FLOW_VARIANT={variant}",
+-                     f"VERILOG_FILES={source}", "grt"], directory / f"{side}.{label}.{repeat}.log", 900)
++                     f"VERILOG_FILES={source}", stage], directory / f"{side}.{label}.{repeat}.{stage}.log", 900)
+     result.update(recipe_fingerprint_sha256=recipe.fingerprint_sha256, source_sha256=expected)
+     metrics_path = ROOT / "logs/nangate45" / ("rtlopt_" + pair["id"]) / variant / "5_1_grt.json"
+     result["metrics_path"] = str(metrics_path)
++    result["synthesis_netlist"] = str(ROOT / "results/nangate45" / ("rtlopt_" + pair["id"]) / variant / "1_1_yosys.v")
++    if stage == "synth":
++        result["status"] = "passed" if result["exit_code"] == 0 and Path(result["synthesis_netlist"]).is_file() else "failed"
++        return result
+     if result["exit_code"] == 0 and metrics_path.exists():
+         raw = json.loads(metrics_path.read_text())
+         names = {"area_um2": "design__instance__area", "power_w": "power__total",
+--- a/timing_automation/evaluate_candidate.py
++++ b/timing_automation/evaluate_candidate.py
+@@ -726,6 +726,38 @@
+         )
+ 
+     return reasons
++
++
++def assess_guided_candidate(baseline, candidate, proof, budgets):
++    """Measured same-recipe gate including independent setup and hold budgets."""
++    result = {"keep": False, "comparable": False, "budgets": dict(budgets)}
++    if proof.get("status") != "passed":
++        return {**result, "reason": "not_proven"}
++    if any(run.get("status") != "passed" for run in (baseline, candidate)):
++        return {**result, "reason": "physical_flow_failed"}
++    if not baseline.get("recipe_fingerprint_sha256") or baseline["recipe_fingerprint_sha256"] != candidate.get("recipe_fingerprint_sha256"):
++        return {**result, "reason": "recipe_mismatch"}
++    b, c = baseline.get("metrics", {}), candidate.get("metrics", {})
++    keys = ("area_um2", "power_w", "setup_ws_ns", "hold_ws_ns", "setup_tns_ns", "hold_tns_ns")
++    if any(type(m.get(k)) not in (int, float) or not math.isfinite(m[k]) for m in (b, c) for k in keys):
++        return {**result, "reason": "invalid_metrics"}
++    if b["area_um2"] <= 0 or b["power_w"] <= 0 or c["area_um2"] < 0 or c["power_w"] < 0:
++        return {**result, "reason": "degenerate_metrics"}
++    canonical = lambda m: CanonicalMetrics(m["setup_ws_ns"], m["setup_tns_ns"], m["area_um2"], m["power_w"] * 1000)
++    deltas = compute_deltas(canonical(b), canonical(c))
++    deltas.update(setup_slack_delta_ns=c["setup_ws_ns"] - b["setup_ws_ns"],
++                  hold_slack_delta_ns=c["hold_ws_ns"] - b["hold_ws_ns"])
++    # Use unrounded measured differences for boundary enforcement.
++    checks = {"area_budget": 100 * (c["area_um2"] - b["area_um2"]) / b["area_um2"] <= budgets["max_area_regression_pct"],
++              "power_budget": 100 * (c["power_w"] - b["power_w"]) / b["power_w"] <= budgets["max_power_regression_pct"],
++              "setup_budget": deltas["setup_slack_delta_ns"] >= budgets["min_setup_slack_delta_ns"],
++              "hold_budget": deltas["hold_slack_delta_ns"] >= budgets["min_hold_slack_delta_ns"],
++              "timing_clean": all(m[k] >= 0 for m in (b, c) for k in keys[2:]),
++              "measurable_improvement": (c["area_um2"] <= .99 * b["area_um2"] or
++                                         c["power_w"] <= .99 * b["power_w"] or
++                                         deltas["setup_slack_delta_ns"] >= .01)}
++    return {**result, "keep": all(checks.values()), "comparable": True, "deltas": deltas,
++            "checks": checks, "reason": "accepted" if all(checks.values()) else "policy_rejected"}
+ 
+ 
+ def compute_deltas(
+--- /dev/null
++++ b/timing_automation/guidance_packet.py
+@@ -0,0 +1,202 @@
++"""Optional timing-to-guidance adapter. All diagnostic failures fail open."""
++from __future__ import annotations
++import copy
++import hashlib
++import json
++import math
++from pathlib import Path
++from build_optimizer_input import operator_signature, normalize_transformation_family
++
++
++def fingerprint(value):
++    return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
++
++
++def normalize_mapping(mapped, trusted_sources):
++    """Only exact, hash-verified user-source regions become prompt locations."""
++    mapping = mapped.get("rtl_mapping", {})
++    status = mapping.get("status", "unavailable")
++    if status != "mapped":
++        return {"status": status, "confidence": "low", "reason": "mapping_" + str(status), "regions": []}
++    regions = []
++    for region in mapping.get("rtl_regions", []):
++        source = trusted_sources.get(str(Path(region["file"]).resolve()))
++        if not source or region.get("sha256") != source["sha256"]:
++            continue
++        start, end = region.get("start_line"), region.get("end_line")
++        lines = source["text"].splitlines()
++        if type(start) is int and type(end) is int and 1 <= start <= end <= len(lines):
++            regions.append({"file": source["name"], "sha256": source["sha256"],
++                            "start_line": start, "end_line": end,
++                            "excerpt": "\n".join(lines[start - 1:end])})
++    # Bit-precise mapping proves a cone, not physical branch attribution.
++    # Reconvergence therefore lowers confidence until witnessed by the existing mapper.
++    reliable = bool(regions) and len(regions) == len(mapping.get("rtl_regions", [])) and not mapping.get("remaining_logical_reconvergence", False)
++    if mapping.get("confidence") in ("low", "medium"):
++        reliable = False
++    return {"status": "mapped", "confidence": "high" if reliable else "low",
++            "reason": None if reliable else "untrusted_or_ambiguous_mapping",
++            "regions": regions if reliable else []}
++
++
++def normalize_classification(value):
++    c = value.get("classification", {})
++    reliable = c.get("status") == "classified" and c.get("confidence") in ("high", "medium")
++    family = normalize_transformation_family(c.get("structural_pattern"))
++    if family in (None, "mixed_or_unclassified_logic", "direct_or_empty_logic", "unknown", "unclassified"):
++        reliable = False
++    return {"status": "classified" if reliable else "unclassified",
++            "confidence": c.get("confidence", "low"),
++            "family": family if reliable else None,
++            "structural_class": c.get("structural_class") if reliable else None}
++
++
++def build_packet(paths, mapper, classifier, trusted_sources, *, mode="auto", history=(),
++                 max_groups=3, max_excerpts=2, evidence=None):
++    packet = {"schema": "guidance_packet/1", "mode_requested": mode,
++              "mode_used": "exploratory", "mapping_status": "unavailable",
++              "mapping_confidence": "low", "classification_status": "skipped",
++              "fallback_reason": "mapping_unavailable", "groups": [], "recommendations": [],
++              "prior_attempt_outcomes": list(history), "evidence": evidence or {},
++              "path_groups_considered": 0, "path_groups_sent_to_llm": 0,
++              "prompt_compaction": {}}
++    try:
++        if not isinstance(paths, list) or not paths:
++            raise ValueError("no parsed timing paths")
++        grouped = {}
++        failures = []
++        mapping_statuses = []
++        for path in paths:
++            if not isinstance(path, dict) or not isinstance(path.get("slack_ns"), (int, float)) or not math.isfinite(path["slack_ns"]):
++                raise ValueError("malformed timing path/slack")
++            mapped = mapper(path)
++            mapping = normalize_mapping(mapped, trusted_sources)
++            mapping_statuses.append(mapping["status"])
++            if mapping["confidence"] != "high":
++                failures.append(mapping["reason"])
++                continue
++            try:
++                classification = normalize_classification(classifier(mapped))
++            except Exception as exc:
++                packet["classification_status"] = "failed"
++                raise RuntimeError(f"classification_failed: {type(exc).__name__}: {exc}") from exc
++            regions = mapping["regions"]
++            key = fingerprint({"locations": sorted([{k: r[k] for k in ("file", "sha256", "start_line", "end_line")} for r in regions],
++                                                    key=lambda r: (r["file"], r["start_line"], r["end_line"])),
++                               "class": classification.get("structural_class"), "pattern": classification.get("family"),
++                               "operators": operator_signature(mapped.get("rtl_mapping", {}).get("operator_counts", {})),
++                               "path_type": path.get("path_type"), "path_group": path.get("path_group")})
++            item = {"group_id": key[:16], "startpoint": path.get("startpoint"),
++                    "endpoint": path.get("endpoint"), "slack_ns": path["slack_ns"],
++                    "path_type": path.get("path_type"), "path_ids": [path.get("path_id")],
++                    "timing": {k: path.get(k) for k in ("logic_depth", "cell_delay_sum_ns", "net_delay_sum_ns", "cell_type_counts", "max_fanout")},
++                    "mapping_confidence": "high", "classification": classification,
++                    "source_excerpts": regions[:max_excerpts]}
++            if key not in grouped:
++                grouped[key] = item
++            else:
++                old = grouped[key]
++                ids = old["path_ids"] + item["path_ids"]
++                grouped[key] = min((old, item), key=lambda x: x["slack_ns"])
++                grouped[key]["path_ids"] = ids
++        packet["path_groups_considered"] = len(grouped)
++        packet["mapping_failure_reasons"] = sorted(set(failures))
++        if mapping_statuses and len(set(mapping_statuses)) == 1:
++            packet["mapping_status"] = mapping_statuses[0]
++        if not grouped and failures:
++            packet["fallback_reason"] = failures[0]
++        groups = sorted(grouped.values(), key=lambda x: (x["slack_ns"], x["group_id"]))[:max_groups]
++        if groups:
++            packet.update(mapping_status="mapped", mapping_confidence="high", groups=groups)
++            classified = [g for g in groups if g["classification"]["status"] == "classified"]
++            packet["classification_status"] = "classified" if classified else (
++                "failed" if any(g["classification"]["status"] == "failed" for g in groups) else "unclassified")
++            packet["recommendations"] = [{"group_id": g["group_id"], "transformation_family": g["classification"]["family"],
++                                           "instruction": "Consider an equivalent alternative for this evidence-backed structural pattern."}
++                                          for g in classified if g["classification"].get("family")]
++            packet["mode_used"] = "guided" if classified else "guided_evidence_only"
++            packet["fallback_reason"] = None if classified else "No reliable classification was identified."
++        if mode == "exploratory":
++            packet.update(mode_used="exploratory", fallback_reason="explicit_exploratory")
++        if packet["mode_used"] == "exploratory":
++            packet.update(groups=[], recommendations=[])
++        packet["path_groups_sent_to_llm"] = len(packet["groups"])
++        packet["evidence_fingerprint"] = fingerprint({"paths": paths, "evidence": evidence or {}})
++    except Exception as exc:
++        packet.update(mode_used="exploratory", mapping_status="failed", mapping_confidence="low",
++                      fallback_reason="guidance_error",
++                      guidance_error=f"{type(exc).__name__}: {exc}", groups=[], recommendations=[], path_groups_sent_to_llm=0)
++    return packet
++
++
++def packet_from_run(run, source, top, directory, flow_root, *, mode="auto", history=(),
++                    max_groups=3, max_excerpts=2):
++    """Use the timing report and canonical RTL graph from the same physical run."""
++    from parse_timing import parse_report
++    from map_to_rtl import RTLGraphIndex, SourceHashCache, map_path
++    from classify_path import classify_one_path
++    from build_rtl_graph import build_rtl_graph
++    kwargs = dict(mode=mode, history=history, max_groups=max_groups, max_excerpts=max_excerpts)
++    try:
++        directory.mkdir(parents=True, exist_ok=True)
++        relative = Path(run["metrics_path"]).parent.relative_to(flow_root / "logs")
++        report = flow_root / "reports" / relative / "5_global_route.rpt"
++        evidence = {"report": str(report), "report_sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
++                    "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
++                    "metrics": run.get("metrics", {}), "source_role": "current_diagnosis"}
++        if run.get("source_sha256") != evidence["source_sha256"]:
++            raise ValueError("timing_source_identity_unverified")
++        parsed = parse_report(report)
++        (directory / "parsed_timing.json").write_text(json.dumps(parsed, indent=2, sort_keys=True) + "\n")
++        evidence["parsed_timing_artifact"] = str(directory / "parsed_timing.json")
++        paths = parsed["paths"]
++        # Explicit exploratory arms do not spend work on mapping/classification.
++        if mode == "exploratory":
++            return build_packet(paths, lambda p: {}, lambda p: {}, {}, evidence=evidence, **kwargs)
++        checkpoint = flow_root / "results" / relative / "1_1_yosys_canonicalize.rtlil"
++        evidence["checkpoint_sha256"] = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
++        _, graph = build_rtl_graph(flow_dir=flow_root, platform="nangate45", design=relative.parts[1],
++                                  top=top, variant=relative.parts[2], checkpoint=checkpoint,
++                                  output_file=directory / "rtl_graph.json")
++        index, hasher = RTLGraphIndex(graph, top), SourceHashCache()
++        trusted = {str(source.resolve()): {"name": source.name, "sha256": evidence["source_sha256"],
++                                          "text": source.read_text()}}
++        def mapper(p):
++            mapped = map_path(p, index, flow_root, [source.parent], hasher)
++            (directory / f"mapped_path_{p['path_id']}.json").write_text(json.dumps(mapped, indent=2, sort_keys=True) + "\n")
++            return mapped
++        def classifier(p):
++            classified = classify_one_path(p, None)
++            (directory / f"classified_path_{p['path_id']}.json").write_text(json.dumps(classified, indent=2, sort_keys=True) + "\n")
++            return classified
++        return build_packet(paths, mapper, classifier, trusted, evidence=evidence, **kwargs)
++    except Exception as exc:
++        packet = build_packet([], None, None, {}, **kwargs)
++        packet["guidance_error"] = f"{type(exc).__name__}: {exc}"
++        return packet
++
++
++def compact_packet(packet, max_chars):
++    """Trim advisory payload only. Source/contract/budgets live outside this cap."""
++    p = copy.deepcopy(packet)
++    decisions = []
++    def size():
++        return len(json.dumps(p, sort_keys=True))
++    while size() > max_chars and len(p.get("groups", [])) > 1:
++        removed = p["groups"].pop()
++        p["recommendations"] = [r for r in p.get("recommendations", []) if r["group_id"] != removed["group_id"]]
++        decisions.append("removed_lower_ranked_group")
++    for g in reversed(p.get("groups", [])):
++        while size() > max_chars and g.get("source_excerpts"):
++            g["source_excerpts"].pop()
++            decisions.append("removed_source_excerpt")
++    while size() > max_chars and p.get("prior_attempt_outcomes"):
++        p["prior_attempt_outcomes"].pop(0)
++        decisions.append("removed_old_feedback")
++    if size() > max_chars:
++        p = {"schema": "guidance_packet/1", "mode_used": "exploratory", "groups": [],
++             "recommendations": [], "fallback_reason": "guidance_budget_exhausted"}
++        decisions.append("exploratory_due_to_budget")
++    p["path_groups_sent_to_llm"] = len(p["groups"])
++    return p, {"limit_chars": max_chars, "rendered_chars": len(json.dumps(p, sort_keys=True)),
++               "decisions": decisions, "protected_sections": ["contract", "budgets", "source", "schema"]}
+--- a/timing_automation/lint_candidate.py
++++ b/timing_automation/lint_candidate.py
+@@ -332,7 +332,7 @@
+     if not isinstance(unit_id, str) or not unit_id:
+         raise RequestValidationError("request unit_id must be a non-empty string")
+     mode = request.get("optimizer_mode") or "guided"
+-    if mode not in ("guided", "exploratory"):
++    if mode not in ("guided", "guided_evidence_only", "exploratory"):
+         raise RequestValidationError(f"invalid optimizer_mode {mode!r}")
+ 
+     request_bundle = request.get("source_bundle") or {}
+--- a/timing_automation/optimizer_history.py
++++ b/timing_automation/optimizer_history.py
+@@ -5,6 +5,32 @@
+ import json
+ from pathlib import Path
+ from typing import Any, Dict, List, Mapping, Optional, Set
++
++
++def guided_attempt_record(row):
++    """Families are explicitly reported by the proposal, never guessed from design IDs."""
++    status = row.get("status", "unknown")
++    comparable = bool(row.get("promotion", {}).get("comparable"))
++    infrastructure = status in {"groq_failed", "physical_flow_failed", "synthesis_failed", "infrastructure_failed", "formal_timeout"}
++    return {"attempt": row.get("attempt"), "outcome_type": status,
++            "attempted_transformation_family": row.get("attempted_transformation_family"),
++            "family_provenance": row.get("family_provenance"),
++            "evidence_fingerprint": row.get("guidance", {}).get("evidence_fingerprint"),
++            "ppa_deltas": row.get("ppa_deltas", {}), "comparable": comparable,
++            "infrastructure_failure": infrastructure,
++            "rejected_transformation_family": bool(row.get("attempted_transformation_family")) and
++                not infrastructure and (status == "no_op_after_synthesis" or (comparable and status != "promoted"))}
++
++
++def retry_feedback(row):
++    record = guided_attempt_record(row)
++    return {**record, "lint": row.get("lint", {}).get("reasons", []),
++            "elaboration": row.get("reason"), "formal": row.get("formal", {}),
++            "synthesis_no_op": row.get("synthesis_no_op"), "promotion": row.get("promotion", {}),
++            "instruction": ("Use a materially different implementation strategy; synthesis produced the same netlist."
++                            if row.get("status") == "no_op_after_synthesis" else
++                            "Repair the reported validity or behavior failure, or use measured outcomes to choose the next equivalent rewrite. "
++                            "Infrastructure failures do not reject a transformation family.")}
+ 
+ 
+ class OptimizerHistoryError(RuntimeError):
+--- a/timing_automation/prompt_renderer.py
++++ b/timing_automation/prompt_renderer.py
+@@ -25,6 +25,50 @@
+ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any, Dict, List, Mapping, Optional, Sequence
++
++
++def render_groq_prompt(request, schema, feedback=None, max_guidance_chars=6000):
++    from guidance_packet import compact_packet
++    packet, budget = compact_packet(request.get("guidance") or {
++        "schema": "guidance_packet/1", "mode_used": "exploratory", "groups": [],
++        "recommendations": [], "prior_attempt_outcomes": []}, max_guidance_chars)
++    # Defense in depth: an exploratory request must never expose diagnostic ranges.
++    mode = packet["mode_used"]
++    if mode == "exploratory":
++        packet["groups"], packet["recommendations"] = [], []
++    elif mode == "guided_evidence_only":
++        packet["recommendations"] = []
++    notes = {
++        "guided": "Use the current mapped evidence and reliable structural classification as advisory guidance.",
++        "guided_evidence_only": "Use mapped timing evidence; no reliable transformation recommendation is available.",
++        "exploratory": "Choose an equivalent rewrite from the complete source; no reliable source-location guidance is supplied.",
++    }
++    system = ("You optimize Verilog RTL for PPA. Return only one JSON object conforming to the supplied response schema. "
++              "Return a complete compilable source file; preserve the top-level interface and cycle-visible behavior. "
++              "Helper modules, hierarchy, and internal state representation may change only if formal equivalence can prove the result. "
++              + notes[mode] + " Candidate timing evidence describes the explicitly identified prior candidate, not the golden source. "
++              "Never apply candidate line numbers to golden source. Predictions do not enforce acceptance budgets.")
++    source = request["source_bundle"]["sources"][0]
++    payload = {"task": "Optimize this RTL-OPT baseline for area, power, or timing.",
++               "optimizer_mode": mode, "target_unit_id": request["unit_id"],
++               "top": request["source_bundle"]["top"],
++               "source": {**source, "verilog": request["source_text"]},
++               "source_bundle": request["source_bundle"], "candidate_contract": request["candidate_contract"],
++               "user_ppa_budgets": request.get("user_ppa_budgets", {}),
++               "baseline_evidence": {k: v for k, v in request.get("baseline_evidence", {}).items()
++                                     if k != "worst_setup_path_excerpt"},
++               "guidance": packet, "response_schema": schema}
++    # Feedback shares the advisory cap with guidance, including its newest outcome.
++    # The packet already contains compact prior outcomes; do not duplicate unbounded logs.
++    if feedback and not packet.get("prior_attempt_outcomes"):
++        compact = {k: feedback.get(k) for k in ("outcome_type", "instruction", "ppa_deltas")}
++        if len(json.dumps({**packet, "latest_feedback": compact}, sort_keys=True)) <= max_guidance_chars:
++            packet["latest_feedback"] = compact
++    budget["rendered_chars"] = len(json.dumps(packet, sort_keys=True))
++    user = json.dumps(payload, sort_keys=True)
++    budget["total_prompt_chars"] = len(system) + len(user)
++    budget["cap_scope"] = "advisory JSON serialized with sort_keys=True; full source and contract are never truncated"
++    return system, user, packet, budget
+ 
+ 
+ class PromptRenderError(RuntimeError):
+@@ -106,7 +150,8 @@
+     return matches[0]
+ 
+ 
+-def build_design_view(request: Mapping[str, Any], design_context: Mapping[str, Any]) -> Dict[str, Any]:
++def build_design_view(request: Mapping[str, Any], design_context: Mapping[str, Any],
++                      guidance=None, user_budgets=None) -> Dict[str, Any]:
+     unit_id = request.get("unit_id")
+     unit = select_one(
+         design_context.get("optimization_units"), key="unit_id", value=unit_id,
+@@ -122,13 +167,19 @@
+         # Compatibility fallback for older requests. New v2.2 requests should
+         # always carry the complete SourceBundle prompt snapshot.
+         sources = design_context.get("sources") or []
+-    optimizer_mode = request.get("optimizer_mode") or "guided"
++    active_guidance = guidance if guidance is not None else request.get("guidance")
++    optimizer_mode = (active_guidance or {}).get("mode_used") or request.get("optimizer_mode") or "guided"
++    if active_guidance and optimizer_mode == "exploratory":
++        active_guidance = {**active_guidance, "groups": [], "recommendations": []}
+     focus = request.get("primary_diagnostic_focus") or request.get("target") or {}
++    use_legacy_diagnosis = optimizer_mode != "exploratory" and active_guidance is None
+     return {
+         "design": design_context.get("design"),
+         "baseline_metrics": design_context.get("baseline_metrics"),
+         "constraints": design_context.get("constraints"),
+         "optimizer_mode": optimizer_mode,
++        "guidance": active_guidance,
++        "user_ppa_budgets": user_budgets if user_budgets is not None else request.get("user_ppa_budgets", {}),
+         "diagnostic_confidence": request.get("diagnostic_confidence"),
+         "routing_reason": request.get("routing_reason"),
+         "source_bundle": {
+@@ -146,14 +197,14 @@
+             ),
+         },
+         "diagnostic_focus": {
+-            "primary": focus,
+-            "recommended_focus_ranges": request.get("recommended_focus_ranges", []),
+-            "recommended_pattern_focus_ranges": request.get("recommended_pattern_focus_ranges", {}),
+-            "recommended_pattern_ids": request.get("recommended_pattern_ids", []),
++            "primary": focus if use_legacy_diagnosis else {},
++            "recommended_focus_ranges": request.get("recommended_focus_ranges", []) if use_legacy_diagnosis else [],
++            "recommended_pattern_focus_ranges": request.get("recommended_pattern_focus_ranges", {}) if use_legacy_diagnosis else {},
++            "recommended_pattern_ids": request.get("recommended_pattern_ids", []) if use_legacy_diagnosis else [],
+             "advisory_only": True,
+         },
+-        "critical_evidence": unit.get("critical_evidence"),
+-        "diagnostic_regions": regions,
++        "critical_evidence": unit.get("critical_evidence") if use_legacy_diagnosis else None,
++        "diagnostic_regions": regions if use_legacy_diagnosis else [],
+     }
+ 
+ def compact_design_view_for_soft_limit(view: Mapping[str, Any]) -> Dict[str, Any]:
+@@ -277,6 +328,8 @@
+     mode_note = (
+         "GUIDED mode: prioritize the supplied diagnosis and recommendations, but they are not edit boundaries."
+         if mode == "guided"
++        else "GUIDED_EVIDENCE_ONLY mode: use mapped evidence without assuming a transformation recommendation."
++        if mode == "guided_evidence_only"
+         else "EXPLORATORY mode: diagnosis is uncertain; reason over the complete SourceBundle and choose any safe equivalent rewrite."
+     )
+     system_text = (
+--- /dev/null
++++ b/timing_automation/report_guided_experiment.py
+@@ -0,0 +1,80 @@
++"""Offline paired-guidance statistics. No tools, model calls, or RTL reads."""
++from __future__ import annotations
++import argparse
++import json
++from pathlib import Path
++from statistics import median
++
++
++def aggregate(results):
++    attempts = [a for r in results for a in r.get("attempts", [])]
++    calls = sum(bool(a.get("groq_call_attempted")) for a in attempts)
++    accepted = sum(a.get("status") == "promoted" for a in attempts)
++    comparable = [a for a in attempts if a.get("promotion", {}).get("comparable")]
++    rate = lambda n, d: n / d if d else None
++    metric_names = ("area_delta_pct", "power_delta_pct", "setup_slack_delta_ns", "hold_slack_delta_ns")
++    metrics = {}
++    for key in metric_names:
++        values = [a["ppa_deltas"][key] for a in comparable if key in a.get("ppa_deltas", {})]
++        metrics[key] = {"n": len(values), "median": median(values) if values else None,
++                        "best": (min(values) if key.endswith("pct") else max(values)) if values else None}
++    guidance_attempts = [a for r in results if r.get("arm") != "exploratory" for a in r.get("attempts", [])]
++    fallback = sum(a.get("guidance", {}).get("mode_used") == "exploratory" for a in guidance_attempts)
++    return {"design_runs": len(results), "attempts": len(attempts), "calls": calls,
++            "accepted_candidates": accepted, "accepted_rate_per_call": rate(accepted, calls),
++            "design_success_rate": rate(sum(r.get("status") == "promoted" for r in results), len(results)),
++            "lint_pass_rate": rate(sum(a.get("lint", {}).get("ok") is True for a in attempts), calls),
++            "formal_pass_rate": rate(sum(a.get("formal", {}).get("status") == "passed" for a in attempts), calls),
++            "synthesis_no_op_rate": rate(sum(a.get("synthesis_no_op") is True for a in attempts), calls),
++            "comparable_ppa_rate": rate(len(comparable), calls), "calls_per_accepted_candidate": rate(calls, accepted),
++            "guidance_attempts": len(guidance_attempts), "fallback_count": fallback,
++            "fallback_rate": rate(fallback, len(guidance_attempts)), "metrics": metrics}
++
++
++def summarize(arms):
++    return {"schema": "guided_experiment_summary/1", "arms": {
++        arm: {"aggregate": aggregate(rows), "per_design": {
++            design: aggregate([r for r in rows if r["id"] == design]) for design in sorted({r["id"] for r in rows})}}
++        for arm, rows in arms.items()},
++        "definitions": {"rates": "per attempted Groq call unless named design_success_rate or fallback_rate",
++                        "metrics": "all comparable first PPA comparisons, including rejected candidates; repeat confirmation gates acceptance",
++                        "best_direction": "area/power deltas lower is better; setup/hold deltas higher is better",
++                        "missing": "null means no observations; never zero-filled"}}
++
++
++def report(directory):
++    arms = {}
++    for arm in ("guided", "exploratory"):
++        files = sorted((directory / arm).glob("repetition_*/*/result.json"))
++        arms[arm] = [json.loads(path.read_text()) for path in files]
++    summary = summarize(arms)
++    # Match by repetition and design, and expose incomplete pairs explicitly.
++    keys = {arm: {str(p.relative_to(directory / arm)): json.loads(p.read_text())
++                  for p in sorted((directory / arm).glob("repetition_*/*/result.json"))} for arm in arms}
++    expected = set()
++    config_path = directory / "config.json"
++    if config_path.is_file():
++        config = json.loads(config_path.read_text())
++        expected = {f"repetition_{rep:02d}/{design}/result.json" for rep in range(1, config.get("repetitions", 1) + 1)
++                    for design in config.get("selected_ids", [])}
++    all_keys = sorted(set(keys["guided"]) | set(keys["exploratory"]) | expected)
++    summary["paired_runs"] = [{"key": k, "complete": all(k in keys[a] for a in arms),
++                               "statuses": {a: keys[a].get(k, {}).get("status") for a in arms}} for k in all_keys]
++    (directory / "experiment_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
++    lines = ["# Guided versus exploratory", "", "Rates use attempted calls; PPA statistics include comparable rejected candidates. Null means no observations.", "",
++             "| Arm | Calls | Accepted | Calls/accepted | Fallback rate |", "|---|---:|---:|---:|---:|"]
++    for arm, item in summary["arms"].items():
++        a = item["aggregate"]
++        lines.append(f"| {arm} | {a['calls']} | {a['accepted_candidates']} | {a['calls_per_accepted_candidate']} | {a['fallback_rate']} |")
++    lines += ["", "Full per-design rates, medians, best measured deltas, and pair completeness:", "", "```json", json.dumps(summary, indent=2), "```", ""]
++    (directory / "experiment_report.md").write_text("\n".join(lines))
++    return summary
++
++
++if __name__ == "__main__":
++    ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument("experiment", type=Path)
++    args = ap.parse_args()
++    if not args.experiment.is_dir():
++        ap.error("experiment directory does not exist")
++    report(args.experiment)
+--- a/timing_automation/run_rtl_opt_groq.py
++++ b/timing_automation/run_rtl_opt_groq.py
+@@ -13,6 +13,11 @@
+ import json
+ import os
+ import tempfile
++import copy
++import math
++import shutil
++from datetime import datetime, timezone
++from uuid import uuid4
+ from pathlib import Path
+ from typing import Any, Mapping
+ 
+@@ -21,6 +26,12 @@
+ from lint_candidate import lint_candidate
+ from run_optimizer import call_groq
+ from source_bundle import SourceBundle
++from guidance_packet import packet_from_run
++from prompt_renderer import render_groq_prompt
++from optimizer_history import guided_attempt_record, retry_feedback
++from evaluate_candidate import assess_guided_candidate
++from yosys_structure import normalized_synthesis_hash, quote_yosys_token
++from build_optimizer_input import normalize_transformation_family
+ 
+ 
+ ROOT = cal.ROOT
+@@ -47,6 +58,9 @@
+ def make_manifest(pair: Mapping[str, Any], directory: Path) -> DesignManifest:
+     source = Path(pair["baseline"]["source"])
+     name = source.name
++    directory.mkdir(parents=True, exist_ok=True)
++    if source.resolve() != (directory / name).resolve():
++        shutil.copy2(source, directory / name)
+     manifest = DesignManifest(
+         dataset="RTL-OPT",
+         design_id=f"rtl_opt_groq_{pair['id']}",
+@@ -64,7 +78,8 @@
+     return manifest
+ 
+ 
+-def make_request(manifest: DesignManifest, directory: Path, baseline_evidence: Mapping[str, Any]) -> dict[str, Any]:
++def make_request(manifest: DesignManifest, directory: Path, baseline_evidence: Mapping[str, Any],
++                 guidance=None, budgets=None) -> dict[str, Any]:
+     source = Path(manifest.source_files[0])
+     text = (directory / source).read_text(encoding="utf-8")
+     bundle = SourceBundle.from_manifest(manifest, directory, verify_manifest_hashes=True)
+@@ -72,7 +87,9 @@
+         "schema": "optimizer_request/2",
+         "response_schema_version": "3.0",
+         "unit_id": "whole_design",
+-        "optimizer_mode": "exploratory",
++        "optimizer_mode": (guidance or {}).get("mode_used", "exploratory"),
++        "guidance": guidance,
++        "user_ppa_budgets": budgets or {},
+         "source_bundle": {
+             "schema": "source_bundle/1",
+             "top": manifest.top,
+@@ -94,25 +111,7 @@
+ 
+ 
+ def prompts(request: Mapping[str, Any], feedback: Mapping[str, Any] | None = None) -> tuple[str, str]:
+-    source = request["source_bundle"]["sources"][0]
+-    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+-    system = (
+-        "You optimize Verilog RTL for PPA. Return only one JSON object conforming "
+-        "to the supplied response schema. Return a complete compilable source file; "
+-        "preserve the top-level interface and cycle-visible behavior. Helper modules, "
+-        "hierarchy, and internal state representation may change only if formal "
+-        "equivalence can prove the result."
+-    )
+-    user = json.dumps({
+-        "task": "Optimize this RTL-OPT baseline for area, power, or timing.",
+-        "target_unit_id": request["unit_id"],
+-        "top": request["source_bundle"]["top"],
+-        "source": {**source, "verilog": request["source_text"]},
+-        "baseline_evidence": request["baseline_evidence"],
+-        "prior_attempt_feedback": dict(feedback or {}),
+-        "response_schema": schema,
+-    }, indent=2)
+-    return system, user
++    return render_groq_prompt(request, json.loads(SCHEMA.read_text()), feedback)[:2]
+ 
+ 
+ def timing_excerpt(metrics_path: str) -> list[str]:
+@@ -137,6 +136,8 @@
+ 
+ 
+ def select_baseline(pair: dict[str, Any], directory: Path) -> tuple[dict[str, Any], Mapping[str, Any]] | tuple[None, Mapping[str, Any]]:
++    pair = copy.deepcopy(pair)
++    pair["reference"] = copy.deepcopy(pair["baseline"])
+     formal_dir = directory / "baseline_elaboration"
+     formal_dir.mkdir(parents=True, exist_ok=True)
+     module = cal.v2.elaborate(pair, formal_dir)
+@@ -152,85 +153,202 @@
+             evidence = {"selected_period_ns": period, "baseline_metrics": baseline["metrics"],
+                         "worst_setup_path_excerpt": timing_excerpt(baseline["metrics_path"]),
+                         "timing_grid_policy": "first golden-baseline setup/hold-clean period"}
+-            return {"module": module, "period_ns": period, "sweep": sweep}, evidence
++            return {"module": module, "period_ns": period, "sweep": sweep, "run": baseline}, evidence
+     return None, {"timing_grid_ns": list(TIMING_GRID_NS), "sweep": sweep,
+                   "error": "no golden-baseline setup/hold-clean period"}
+ 
+ 
+-def run_one(pair: dict[str, Any], output: Path, args: argparse.Namespace) -> dict[str, Any]:
++def user_budgets(args):
++    return {key: getattr(args, key) for key in (
++        "max_area_regression_pct", "max_power_regression_pct",
++        "min_setup_slack_delta_ns", "min_hold_slack_delta_ns")}
++
++
++def synthesis_hash(run, directory, side):
++    """Hash the actual ORFS post-synthesis netlist, never the elaboration view."""
++    try:
++        if run.get("status") != "passed":
++            raise ValueError("synthesis did not pass")
++        netlist = Path(run["synthesis_netlist"])
++        target = directory / f"{side}.synthesis.json"
++        script = directory / f"{side}.synthesis_hash.ys"
++        script.write_text(f"read_verilog {quote_yosys_token(str(netlist))}\nwrite_json {quote_yosys_token(str(target))}\n")
++        converted = cal.v2.run([cal.v2.YOSYS, "-s", script], directory / f"{side}.synthesis_hash.log", 120)
++        if converted["exit_code"] != 0:
++            raise ValueError("post-synthesis JSON conversion failed")
++        artifact = normalized_synthesis_hash(json.loads(target.read_text()))
++        artifact.update(status="passed", netlist=str(netlist), netlist_sha256=sha256(netlist))
++    except Exception as exc:
++        artifact = {"status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"}
++    write_json(directory / f"{side}.synthesis_hash.json", artifact)
++    return artifact
++
++
++def synthesis_no_op(baseline_hash, candidate_hash):
++    return (baseline_hash.get("status") == candidate_hash.get("status") == "passed"
++            and bool(baseline_hash.get("sha256"))
++            and baseline_hash.get("normalization") == candidate_hash.get("normalization")
++            and baseline_hash["sha256"] == candidate_hash.get("sha256"))
++
++
++def diagnose(run, source, top, directory, args, history=()):
++    try:
++        packet = packet_from_run(run, source, top, directory, ROOT, mode=args.optimizer_mode,
++                                 history=history, max_groups=args.max_guidance_groups,
++                                 max_excerpts=args.max_excerpts_per_group)
++        if packet.get("schema") != "guidance_packet/1" or packet.get("mode_used") not in ("guided", "guided_evidence_only", "exploratory"):
++            raise ValueError("malformed guidance packet")
++        if any(not isinstance(packet.get(key), list) for key in ("groups", "recommendations", "prior_attempt_outcomes")):
++            raise ValueError("malformed guidance lists")
++        json.dumps(packet, allow_nan=False)
++        return packet
++    except Exception as exc:
++        from guidance_packet import build_packet
++        packet = build_packet([], None, None, {}, mode=args.optimizer_mode, history=history)
++        packet["guidance_error"] = f"{type(exc).__name__}: {exc}"
++        return packet
++
++
++def run_one(pair: dict[str, Any], output: Path, args: argparse.Namespace, baseline_data=None) -> dict[str, Any]:
++    pair = copy.deepcopy(pair)
+     directory = output / pair["id"]
+     directory.mkdir(parents=True, exist_ok=True)
+     manifest = make_manifest(pair, directory)
+-    selected, evidence = select_baseline(pair, directory)
+-    result: dict[str, Any] = {"id": pair["id"], "groq": {"model": args.model},
+-                              "baseline_evidence": evidence, "attempts": []}
++    selected, evidence = baseline_data if baseline_data is not None else select_baseline(pair, directory)
++    result = {"schema": "groq_result/3", "id": pair["id"], "arm": args.optimizer_mode,
++              "groq": {"model": args.model}, "user_ppa_budgets": user_budgets(args),
++              "baseline_evidence": evidence, "attempts": []}
++    checkpoint = directory / "result.json"
+     if selected is None:
+         result.update(status="no_baseline_feasible_period")
+-        write_json(directory / "result.json", result)
++        write_json(checkpoint, result)
+         return result
+-    request = make_request(manifest, directory, evidence)
+-    write_json(directory / "request.json", request)
+-    feedback: Mapping[str, Any] = {}
++    current_run, current_source = selected["run"], Path(pair["baseline"]["source"])
++    guidance = diagnose(current_run, current_source, manifest.top, directory / "baseline_guidance", args)
++    write_json(directory / "baseline_guidance.json", guidance)
++    feedback = {}
+     for attempt in range(1, args.max_attempts + 1):
+         attempt_dir = directory / f"attempt_{attempt:02d}"
+         attempt_dir.mkdir(parents=True, exist_ok=True)
+-        system, user = prompts(request, feedback)
+-        raw = call_groq(system_prompt=system, user_prompt=user, model=args.model,
+-                        max_tokens=args.max_tokens, reasoning_effort=args.reasoning_effort,
+-                        temperature=args.temperature, response_schema_path=SCHEMA)
+-        (attempt_dir / "groq_candidate.json").write_text(raw + "\n", encoding="utf-8")
+-        lint = lint_candidate(manifest=manifest, base_dir=directory, request=request,
+-                              candidate_text=raw, yosys_exe=str(cal.v2.YOSYS),
+-                              candidate_out_dir=attempt_dir / "candidate")
+-        write_json(attempt_dir / "lint.json", lint)
+-        row: dict[str, Any] = {"attempt": attempt, "lint": lint}
++        guidance = copy.deepcopy(guidance)
++        guidance["prior_attempt_outcomes"] = [r["retry_feedback"] for r in result["attempts"]]
++        request = make_request(manifest, directory, evidence, guidance, user_budgets(args))
++        schema = json.loads(SCHEMA.read_text())
++        try:
++            system, user, sent_guidance, budget = render_groq_prompt(
++                request, schema, feedback, args.max_guidance_chars)
++        except Exception as exc:
++            from guidance_packet import build_packet
++            guidance = build_packet([], None, None, {}, mode=args.optimizer_mode)
++            guidance["guidance_error"] = f"prompt_guidance_error: {type(exc).__name__}: {exc}"
++            request["guidance"] = guidance
++            system, user, sent_guidance, budget = render_groq_prompt(request, schema, feedback, args.max_guidance_chars)
++        write_json(attempt_dir / "guidance_full.json", guidance)
++        guidance = {**guidance, **sent_guidance}
++        guidance["prompt_compaction"] = budget
++        guidance["path_groups_sent_to_llm"] = sent_guidance["path_groups_sent_to_llm"]
++        guidance["mode_used"] = sent_guidance["mode_used"]
++        if sent_guidance.get("fallback_reason") == "guidance_budget_exhausted":
++            guidance["fallback_reason"] = sent_guidance["fallback_reason"]
++        write_json(attempt_dir / "guidance.json", guidance)
++        request["optimizer_mode"] = sent_guidance["mode_used"]
++        request["guidance"] = sent_guidance
++        write_json(attempt_dir / "request.json", request)
++        prompt_path = attempt_dir / "prompt.json"
++        write_json(prompt_path, {"system": system, "user": user, "budget": budget})
++        row = {"attempt": attempt, "status": "started", "guidance": guidance,
++               "prompt_artifact": str(prompt_path), "synthesis_no_op": False,
++               "ppa_deltas": {}, "transformation_family_history": [guided_attempt_record(r) for r in result["attempts"]]}
+         result["attempts"].append(row)
+-        if not lint.get("ok"):
+-            feedback = {"lint": lint.get("reasons", []), "instruction": "Return a valid complete source bundle."}
++        write_json(checkpoint, result)
++        try:
++            row["groq_call_attempted"] = True
++            raw = call_groq(system_prompt=system, user_prompt=user, model=args.model,
++                            max_tokens=args.max_tokens, reasoning_effort=args.reasoning_effort,
++                            temperature=args.temperature, response_schema_path=SCHEMA)
++            (attempt_dir / "groq_candidate.json").write_text(raw + "\n", encoding="utf-8")
++        except Exception as exc:
++            row.update(status="groq_failed", reason=f"{type(exc).__name__}: {exc}")
++            row["retry_feedback"] = retry_feedback(row)
++            feedback = row["retry_feedback"]
++            write_json(attempt_dir / "feedback.json", feedback)
++            write_json(attempt_dir / "history.json", guided_attempt_record(row))
++            write_json(checkpoint, result)
+             continue
+-        candidate_manifest = DesignManifest.read_json(attempt_dir / "candidate/design_manifest.json")
+-        candidate_source = candidate_manifest.resolve_path(candidate_manifest.source_files[0], attempt_dir / "candidate")
+-        groq_pair = dict(pair)
+-        groq_pair["reference"] = {"source": str(candidate_source), "top": manifest.top}
+-        groq_pair["verification_method"] = dict(pair["verification_method"])
+-        formal_dir = attempt_dir / "formal"
+-        formal_dir.mkdir(parents=True, exist_ok=True)
+-        module = cal.v2.elaborate(groq_pair, formal_dir)
+-        if module is None:
+-            row.update(status="candidate_elaboration_failed", reason=groq_pair.get("qualification_reason"))
+-            feedback = {"elaboration": row["reason"]}
+-            continue
+-        proof = cal.v2.verify(groq_pair, formal_dir)
+-        row["formal"] = proof
+-        if proof["status"] != "passed":
+-            row["status"] = "not_equivalent"
+-            feedback = counterexample_feedback(proof)
+-            continue
+-        recipe, physical_candidate, _profile = cal.freeze(groq_pair, attempt_dir / "paired_recipe",
+-                                                           selected["module"], selected["period_ns"], "groq_paired")
+-        baseline = cal.physical(groq_pair, attempt_dir / "paired_recipe", "baseline", recipe,
+-                                Path(pair["baseline"]["source"]), f"attempt{attempt}")
+-        candidate = cal.physical(groq_pair, attempt_dir / "paired_recipe", "reference", recipe,
+-                                 physical_candidate, f"attempt{attempt}")
+-        promotion = cal.v2.assess(baseline, candidate, proof)
+-        row.update(status="promoted" if promotion["keep"] else "analyzed",
+-                   ppa={"baseline": baseline, "candidate": candidate}, promotion=promotion)
+-        if promotion["keep"]:
+-            repeat_baseline = cal.physical(groq_pair, attempt_dir / "paired_recipe", "baseline", recipe,
+-                                            Path(pair["baseline"]["source"]), f"attempt{attempt}", repeat=1)
+-            repeat_candidate = cal.physical(groq_pair, attempt_dir / "paired_recipe", "reference", recipe,
+-                                             physical_candidate, f"attempt{attempt}", repeat=1)
+-            row["repeat_promotion"] = cal.v2.assess(repeat_baseline, repeat_candidate, proof)
+-            if not row["repeat_promotion"]["keep"]:
+-                row["status"] = "analyzed"
+-                row["promotion"] = {"keep": False, "reason": "repeat_did_not_confirm"}
++        try:
++            lint = lint_candidate(manifest=manifest, base_dir=directory, request=request,
++                                  candidate_text=raw, yosys_exe=str(cal.v2.YOSYS),
++                                  candidate_out_dir=attempt_dir / "candidate")
++            row["lint"] = lint
++            write_json(attempt_dir / "lint.json", lint)
++            if not lint.get("ok"):
++                row["status"] = "lint_failed"
++                continue
++            proposal = json.loads(raw)
++            family = proposal.get("chosen_pattern_id")
++            if isinstance(family, str) and family.strip():
++                row.update(attempted_transformation_family=normalize_transformation_family(family), family_provenance="candidate.chosen_pattern_id")
++            candidate_manifest = DesignManifest.read_json(attempt_dir / "candidate/design_manifest.json")
++            candidate_source = candidate_manifest.resolve_path(candidate_manifest.source_files[0], attempt_dir / "candidate")
++            groq_pair = copy.deepcopy(pair)
++            groq_pair["reference"] = {"source": str(candidate_source), "top": manifest.top}
++            formal_dir = attempt_dir / "formal"
++            formal_dir.mkdir(parents=True, exist_ok=True)
++            module = cal.v2.elaborate(groq_pair, formal_dir)
++            if module is None:
++                row.update(status="candidate_elaboration_failed", reason=groq_pair.get("qualification_reason"))
++                continue
++            proof = cal.v2.verify(groq_pair, formal_dir)
++            row["formal"] = proof
++            if proof["status"] != "passed":
++                row["status"] = "formal_timeout" if proof["status"] == "timeout" else "not_proven"
++                continue
++            physical_dir = attempt_dir / "paired_recipe"
++            recipe, physical_candidate, _profile = cal.freeze(groq_pair, physical_dir,
++                selected["module"], selected["period_ns"], "groq_paired")
++            baseline_source = Path(pair["baseline"]["source"])
++            synth_b = cal.physical(groq_pair, physical_dir, "baseline", recipe, baseline_source, f"attempt{attempt}", stage="synth")
++            synth_c = cal.physical(groq_pair, physical_dir, "reference", recipe, physical_candidate, f"attempt{attempt}", stage="synth")
++            bh, ch = synthesis_hash(synth_b, physical_dir, "baseline"), synthesis_hash(synth_c, physical_dir, "candidate")
++            row["synthesis"] = {"baseline": synth_b, "candidate": synth_c, "baseline_hash": bh, "candidate_hash": ch}
++            row["synthesis_no_op"] = synthesis_no_op(bh, ch)
++            if row["synthesis_no_op"]:
++                row["status"] = "no_op_after_synthesis"
++                continue
++            baseline = cal.physical(groq_pair, physical_dir, "baseline", recipe, baseline_source, f"attempt{attempt}")
++            candidate = cal.physical(groq_pair, physical_dir, "reference", recipe, physical_candidate, f"attempt{attempt}")
++            promotion = assess_guided_candidate(baseline, candidate, proof, user_budgets(args))
++            row.update(status="promoted" if promotion["keep"] else "analyzed" if promotion["comparable"] else "physical_flow_failed",
++                       ppa={"baseline": baseline, "candidate": candidate}, promotion=promotion,
++                       ppa_deltas=promotion.get("deltas", {}))
++            if promotion["comparable"]:
++                # Advance diagnosis even after a measured rejection. The golden proposal source stays immutable.
++                current_run, current_source = candidate, physical_candidate
++                guidance = diagnose(current_run, current_source, manifest.top, attempt_dir / "next_guidance", args)
++                guidance["evidence"]["source_role"] = "prior_candidate"
++                write_json(attempt_dir / "next_guidance.json", guidance)
++            if promotion["keep"]:
++                rb = cal.physical(groq_pair, physical_dir, "baseline", recipe, baseline_source, f"attempt{attempt}", repeat=1)
++                rc = cal.physical(groq_pair, physical_dir, "reference", recipe, physical_candidate, f"attempt{attempt}", repeat=1)
++                repeat = assess_guided_candidate(rb, rc, proof, user_budgets(args))
++                row.update(repeat_ppa={"baseline": rb, "candidate": rc}, repeat_promotion=repeat)
++                if not repeat["keep"]:
++                    row.update(status="analyzed" if repeat["comparable"] else "physical_flow_failed")
++                    row["promotion"] = {**promotion, "keep": False, "reason": "repeat_did_not_confirm"}
++        except Exception as exc:
++            row.update(status="infrastructure_failed", reason=f"{type(exc).__name__}: {exc}")
++        finally:
++            feedback = retry_feedback(row)
++            row["retry_feedback"] = feedback
++            write_json(attempt_dir / "feedback.json", feedback)
++            write_json(attempt_dir / "history.json", guided_attempt_record(row))
++            write_json(checkpoint, result)
+         if row["status"] == "promoted":
+-            result.update(status="promoted", period_ns=selected["period_ns"], promotion=row["promotion"])
+-            write_json(directory / "result.json", result)
+-            return result
+-        feedback = {"ppa": row["promotion"], "instruction": "Target a different cone; avoid a no-op or reported regression."}
+-    result.update(status=result["attempts"][-1].get("status", "exhausted"), period_ns=selected["period_ns"])
+-    write_json(directory / "result.json", result)
++            break
++    result.update(status=result["attempts"][-1]["status"], period_ns=selected["period_ns"])
++    from report_guided_experiment import aggregate
++    result["statistics"] = aggregate([result])
++    write_json(checkpoint, result)
+     return result
+ 
+ 
+@@ -268,38 +386,92 @@
+                 "verilog": (root / "top.v").read_text(encoding="utf-8"),
+             }],
+         }
+-        lint = lint_candidate(manifest=manifest, base_dir=root, request=request,
+-                              candidate_text=json.dumps(candidate),
+-                              yosys_exe=str(cal.v2.YOSYS),
+-                              candidate_out_dir=root / "candidate")
++        from unittest.mock import patch
++        with patch(__name__ + ".lint_candidate", return_value={"ok": True}) as mocked:
++            lint = lint_candidate(manifest=manifest, base_dir=root, request=request,
++                                  candidate_text=json.dumps(candidate), candidate_out_dir=root / "candidate")
++            assert mocked.call_count == 1
+         assert lint["ok"], lint
+-    print("PASS: RTL-OPT Groq request and lint-gate self-test")
++    from test_guided_rtl_opt import run_tests
++    run_tests()
++    print("PASS: RTL-OPT Groq request and mocked pipeline self-test; no external tools")
+ 
+ 
+ def main() -> int:
+     ap = argparse.ArgumentParser(description=__doc__)
+-    ap.add_argument("--output", type=Path, default=ROOT / "ai_runs/rtl_opt_groq")
++    ap.add_argument("--output", type=Path, help="new immutable run directory (default: timestamp plus unique ID)")
+     ap.add_argument("--pairs", nargs="*", help="RTL-OPT pair ids; defaults to the first ten corpus entries")
+     ap.add_argument("--model", default=os.environ.get("OPTIMIZER_MODEL", "openai/gpt-oss-120b"))
+     ap.add_argument("--max-tokens", type=int, default=4096)
+     ap.add_argument("--reasoning-effort", choices=("low", "medium", "high"), default="medium")
+     ap.add_argument("--temperature", type=float, default=0.0)
+     ap.add_argument("--max-attempts", type=int, default=3)
++    ap.add_argument("--optimizer-mode", choices=("auto", "guided", "exploratory"), default="auto")
++    ap.add_argument("--guidance-source", choices=("timing-report",), default="timing-report")
++    ap.add_argument("--max-guidance-groups", type=int, default=3)
++    ap.add_argument("--max-excerpts-per-group", type=int, default=2)
++    ap.add_argument("--max-guidance-chars", type=int, default=6000)
++    ap.add_argument("--max-area-regression-pct", type=float, default=0.5)
++    ap.add_argument("--max-power-regression-pct", type=float, default=0.5)
++    ap.add_argument("--min-setup-slack-delta-ns", type=float, default=0.0)
++    ap.add_argument("--min-hold-slack-delta-ns", type=float, default=0.0)
++    ap.add_argument("--experiment", choices=("single", "paired-guidance"), default="single")
++    ap.add_argument("--repetitions", type=int, default=1)
+     ap.add_argument("--self-test", action="store_true")
+     args = ap.parse_args()
+     if args.self_test:
+         self_test()
+         return 0
++    for name in ("max_attempts", "max_guidance_groups", "max_excerpts_per_group", "repetitions", "max_tokens"):
++        if getattr(args, name) < 1:
++            ap.error(name.replace("_", "-") + " must be positive")
++    if args.max_guidance_chars < 512:
++        ap.error("--max-guidance-chars must be at least 512")
++    if not math.isfinite(args.temperature) or not 0 <= args.temperature <= 2:
++        ap.error("--temperature must be finite and in [0, 2]")
++    if any(not math.isfinite(v) for v in user_budgets(args).values()):
++        ap.error("acceptance budgets must be finite")
++    if args.max_area_regression_pct < 0 or args.max_power_regression_pct < 0:
++        ap.error("area and power regression limits must be nonnegative")
+     if not os.environ.get("GROQ_API_KEY"):
+         ap.error("GROQ_API_KEY is not set; source env.sh and ensure .env.local is present")
+-    output = args.output.resolve()
+-    manifest = cal.prepare(output)
++    output = (args.output or ROOT / "ai_runs" / ("rtl_opt_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid4().hex[:8])).resolve()
++    if output.exists():
++        ap.error("--output already exists; use a new directory to preserve immutable experiment arms")
++    output.mkdir(parents=True, exist_ok=False)
++    write_json(output / "config.json", {**{k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
++               "output": str(output), "runner_sha256": sha256(Path(__file__)),
++               "paired_policy": "shared golden baseline selection per design and repetition; alternate arm order; same model, temperature and acceptance budgets"})
++    manifest = cal.prepare(output / "inputs")
+     ids = args.pairs or [p["id"] for p in manifest["pairs"][:10]]
+     selected = [dict(p) for p in manifest["pairs"] if p["id"] in set(ids)]
+     if len(selected) != len(set(ids)):
+         ap.error("one or more --pairs ids are not in the RTL-OPT corpus")
+-    rows = [run_one(pair, output, args) for pair in selected]
+-    write_json(output / "groq_summary.json", {"selected": ids, "results": rows})
++    config = json.loads((output / "config.json").read_text())
++    config["selected_ids"] = ids
++    write_json(output / "config.json", config)
++    from report_guided_experiment import report, summarize
++    arms = {"guided": [], "exploratory": []} if args.experiment == "paired-guidance" else {args.optimizer_mode: []}
++    for repetition in range(1, args.repetitions + 1):
++        for pair in selected:
++            baseline_data = select_baseline(copy.deepcopy(pair), output / "baselines" / f"repetition_{repetition:02d}" / pair["id"])
++            order = list(arms)
++            if repetition % 2 == 0:
++                order.reverse()
++            for arm in order:
++                arm_args = copy.copy(args)
++                arm_args.optimizer_mode = arm
++                arm_dir = output / arm / f"repetition_{repetition:02d}"
++                row = run_one(pair, arm_dir, arm_args, baseline_data=baseline_data)
++                row["repetition"] = repetition
++                write_json(arm_dir / pair["id"] / "result.json", row)
++                arms[arm].append(row)
++                write_json(arm_dir / "groq_summary.json", {"selected": ids, "results": [r for r in arms[arm] if r["repetition"] == repetition]})
++                write_json(output / "groq_summary.json", {"selected": ids, "results": [r for rows in arms.values() for r in rows],
++                                                           "statistics": summarize(arms)})
++    if args.experiment == "paired-guidance":
++        report(output)
++    print(f"Results: {output}")
+     return 0
+ 
+ 
+--- /dev/null
++++ b/timing_automation/test_guided_rtl_opt.py
+@@ -0,0 +1,354 @@
++"""Pure-Python fixtures: no RTL files, API calls, or EDA execution."""
++import argparse
++import copy
++import json
++import tempfile
++import unittest
++import sys
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import patch
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++
++from guidance_packet import build_packet, compact_packet, normalize_mapping
++from prompt_renderer import render_groq_prompt
++from optimizer_history import guided_attempt_record, retry_feedback
++from evaluate_candidate import assess_guided_candidate
++from yosys_structure import normalized_synthesis_hash
++from report_guided_experiment import aggregate, report
++import run_rtl_opt_groq as runner
++
++
++BUDGETS = dict(max_area_regression_pct=.5, max_power_regression_pct=.5,
++               min_setup_slack_delta_ns=0., min_hold_slack_delta_ns=0.)
++
++
++def metrics(**changes):
++    return {"status": "passed", "recipe_fingerprint_sha256": "same", "metrics_path": "/unused/metrics.json",
++            "metrics": {"area_um2": 100., "power_w": 1., "setup_ws_ns": .2,
++                        "hold_ws_ns": .1, "setup_tns_ns": 0., "hold_tns_ns": 0., **changes}}
++
++
++def request(guidance=None):
++    return {"unit_id": "whole_design", "source_text": "opaque source fixture" * 100,
++            "source_bundle": {"top": "top", "sources": [{"path": "input.txt", "sha256": "hash"}],
++                              "module_to_file": {"top": "input.txt"}},
++            "candidate_contract": {"formal_equivalence_required": True}, "baseline_evidence": {},
++            "user_ppa_budgets": BUDGETS, "guidance": guidance}
++
++
++def fixture_packet(mode="auto", classification="classified", confidence="high", reconvergent=False):
++    source = str(Path("/virtual/input.txt").resolve())
++    trusted = {source: {"name": "input.txt", "sha256": "hash", "text": "first\nsecond\n"}}
++    paths = [{"path_id": 0, "startpoint": "a", "endpoint": "z", "slack_ns": -.1}]
++    def mapper(p):
++        return {**p, "rtl_mapping": {"status": "mapped", "remaining_logical_reconvergence": reconvergent,
++                "rtl_regions": [{"file": source, "sha256": "hash", "start_line": 1, "end_line": 2}]}}
++    classifier = lambda p: {"classification": {"status": classification, "confidence": confidence,
++                           "structural_pattern": "generic_fixture_family"}}
++    return build_packet(paths, mapper, classifier, trusted, mode=mode)
++
++
++class GuidanceTests(unittest.TestCase):
++    def test_real_lint_validator_accepts_three_states(self):
++        from lint_candidate import validate_request
++        bundle = SimpleNamespace(source_hashes=lambda: {"input.txt": "0" * 64},
++                                 module_to_file={"top": "input.txt"}, files={"input.txt": None})
++        for mode in ("guided", "guided_evidence_only", "exploratory"):
++            req = {"schema": "optimizer_request/2", "unit_id": "whole_design", "optimizer_mode": mode,
++                   "source_bundle": {"sources": [{"path": "input.txt", "sha256": "0" * 64}]}}
++            self.assertEqual(validate_request(req, bundle).optimizer_mode, mode)
++
++    def test_existing_parser_fixture(self):
++        from parse_timing import parse_report
++        with tempfile.TemporaryDirectory() as tmp:
++            p = Path(tmp) / "timing.rpt"
++            p.write_text("Startpoint: a (input port)\nEndpoint: z (output port)\nPath Group: core_clock\nPath Type: max\n  -0.12 slack (VIOLATED)\n")
++            parsed = parse_report(p)
++            self.assertEqual(len(parsed["paths"]), 1)
++            self.assertEqual(parsed["paths"][0]["slack_ns"], -.12)
++            self.assertIn("cells", parsed["paths"][0])
++
++    def test_modes(self):
++        self.assertEqual(fixture_packet()["mode_used"], "guided")
++        self.assertEqual(fixture_packet(classification="not_classified")["mode_used"], "guided_evidence_only")
++        self.assertEqual(fixture_packet(confidence="low")["mode_used"], "guided_evidence_only")
++        self.assertEqual(fixture_packet(reconvergent=True)["mode_used"], "exploratory")
++        p = fixture_packet(mode="exploratory")
++        self.assertEqual(p["groups"], [])
++        self.assertEqual(p["recommendations"], [])
++
++    def test_missing_and_malformed(self):
++        for paths in ([], None, [{"slack_ns": "bad"}], [{"slack_ns": float("nan")} ]):
++            p = build_packet(paths, None, None, {})
++            self.assertEqual(p["mode_used"], "exploratory")
++            self.assertIn("guidance_error", p)
++
++    def test_mapper_exception(self):
++        def fail(p):
++            raise RuntimeError("fixture tool crash")
++        p = build_packet([{"slack_ns": 0}], fail, None, {})
++        self.assertIn("fixture tool crash", p["guidance_error"])
++
++    def test_classifier_crash_falls_back(self):
++        source = str(Path("/virtual/input.txt").resolve())
++        trusted = {source: {"name": "input.txt", "sha256": "hash", "text": "first\n"}}
++        mapper = lambda p: {"rtl_mapping": {"status": "mapped", "rtl_regions": [
++            {"file": source, "sha256": "hash", "start_line": 1, "end_line": 1}]}}
++        def fail(p):
++            raise RuntimeError("classification fixture failure")
++        p = build_packet([{"slack_ns": 0}], mapper, fail, trusted)
++        self.assertEqual(p["mode_used"], "exploratory")
++        self.assertEqual(p["classification_status"], "failed")
++        self.assertIn("classification fixture failure", p["guidance_error"])
++
++    def test_untrusted_ranges(self):
++        value = {"rtl_mapping": {"status": "mapped", "rtl_regions": [
++            {"file": "/unknown", "sha256": "bad", "start_line": 1, "end_line": 2}]}}
++        self.assertEqual(normalize_mapping(value, {})["regions"], [])
++
++    def test_prompt_compaction_and_identity(self):
++        p = fixture_packet()
++        p["groups"] *= 8
++        for g in p["groups"]:
++            g["source_excerpts"][0]["excerpt"] = "x" * 10000
++        p["prior_attempt_outcomes"] = [{"old": "x" * 5000} for _ in range(5)]
++        req = request(p)
++        before = copy.deepcopy(req)
++        system, user, sent, budget = render_groq_prompt(req, {"required": ["complete"]}, max_guidance_chars=512)
++        payload = json.loads(user)
++        self.assertEqual(req, before)
++        self.assertEqual(payload["source"]["verilog"], req["source_text"])
++        self.assertEqual(payload["source_bundle"], req["source_bundle"])
++        self.assertEqual(payload["user_ppa_budgets"], BUDGETS)
++        self.assertEqual(payload["response_schema"], {"required": ["complete"]})
++        self.assertLessEqual(len(json.dumps(payload["guidance"], sort_keys=True)), 512)
++        self.assertTrue(budget["decisions"])
++
++    def test_exploratory_sanitized(self):
++        p = fixture_packet()
++        p["mode_used"] = "exploratory"
++        _, user, sent, _ = render_groq_prompt(request(p), {})
++        self.assertNotIn("start_line", user)
++        self.assertEqual(sent["recommendations"], [])
++        from prompt_renderer import build_design_view
++        req = request(p)
++        req.update(recommended_focus_ranges=[{"start_line": 99}], recommended_pattern_ids=["unsupported"])
++        context = {"optimization_units": [{"unit_id": "whole_design", "critical_evidence": {"start_line": 99}}],
++                   "optimization_regions": [{"optimization_unit_id": "whole_design", "start_line": 99}]}
++        view = build_design_view(req, context, guidance=p, user_budgets=BUDGETS)
++        self.assertEqual(view["diagnostic_focus"]["recommended_focus_ranges"], [])
++        self.assertEqual(view["diagnostic_regions"], [])
++        self.assertIsNone(view["critical_evidence"])
++        self.assertEqual(view["source_bundle"]["sources"], req["source_bundle"]["sources"])
++
++    def test_evidence_only_no_recommendation(self):
++        p = fixture_packet(classification="not_classified")
++        _, user, sent, _ = render_groq_prompt(request(p), {})
++        self.assertEqual(sent["mode_used"], "guided_evidence_only")
++        self.assertEqual(sent["recommendations"], [])
++
++    def test_history_does_not_invent_family(self):
++        row = {"status": "analyzed", "promotion": {"comparable": True}, "ppa_deltas": {"area_delta_pct": 2}}
++        f = retry_feedback(row)
++        self.assertIsNone(f["attempted_transformation_family"])
++        self.assertNotIn("carry", json.dumps(f))
++        row.update(status="infrastructure_failed", attempted_transformation_family="reported")
++        self.assertFalse(guided_attempt_record(row)["rejected_transformation_family"])
++        row["status"] = "no_op_after_synthesis"
++        self.assertTrue(guided_attempt_record(row)["rejected_transformation_family"])
++        self.assertIn("materially different", retry_feedback(row)["instruction"])
++
++
++class PolicyTests(unittest.TestCase):
++    def assess(self, candidate, **budgets):
++        return assess_guided_candidate(metrics(), candidate, {"status": "passed"}, {**BUDGETS, **budgets})
++
++    def test_budget_and_improvement(self):
++        self.assertTrue(self.assess(metrics(area_um2=98))["keep"])
++        self.assertFalse(self.assess(metrics())["keep"])
++        self.assertTrue(self.assess(metrics(area_um2=100.4, power_w=.98))["keep"])
++        self.assertFalse(self.assess(metrics(area_um2=100.6, power_w=.98))["keep"])
++        self.assertFalse(self.assess(metrics(area_um2=98, power_w=1.006))["keep"])
++        self.assertFalse(self.assess(metrics(area_um2=98, setup_ws_ns=.199))["keep"])
++        self.assertFalse(self.assess(metrics(area_um2=98, hold_ws_ns=.099))["keep"])
++        self.assertTrue(self.assess(metrics(area_um2=98, hold_ws_ns=.099), min_hold_slack_delta_ns=-.002)["keep"])
++        self.assertFalse(self.assess(metrics(area_um2=98), min_setup_slack_delta_ns=.01)["keep"])
++
++    def test_invalid_metrics_and_identity(self):
++        for c in (metrics(area_um2=float("nan")), metrics(power_w=None), metrics(setup_ws_ns=-1)):
++            self.assertFalse(self.assess(c)["keep"])
++        c = metrics(area_um2=98)
++        c["recipe_fingerprint_sha256"] = "different"
++        self.assertFalse(self.assess(c)["comparable"])
++
++    def test_hash_preserves_connectivity_and_init(self):
++        graph = {"modules": {"top": {"ports": {"y": {"bits": [2], "direction": "output"}},
++                  "cells": {"cell": {"type": "AND", "connections": {"A": [2], "B": [3]}, "parameters": {}, "attributes": {"src": "old"}}},
++                  "netnames": {"n": {"bits": [2], "attributes": {"init": "0"}}}}}}
++        h = normalized_synthesis_hash(graph)
++        clone = copy.deepcopy(graph)
++        clone["modules"]["top"]["cells"]["cell"]["attributes"]["src"] = "new"
++        self.assertEqual(h, normalized_synthesis_hash(clone))
++        clone["modules"]["top"]["cells"]["cell"]["connections"]["A"] = [3]
++        self.assertNotEqual(h, normalized_synthesis_hash(clone))
++        clone = copy.deepcopy(graph)
++        clone["modules"]["top"]["netnames"]["n"]["attributes"]["init"] = "1"
++        self.assertNotEqual(h, normalized_synthesis_hash(clone))
++        with self.assertRaises(ValueError):
++            normalized_synthesis_hash({"modules": {}})
++        self.assertFalse(runner.synthesis_no_op({}, {}))
++        self.assertTrue(runner.synthesis_no_op({**h, "status": "passed"}, {**h, "status": "passed"}))
++
++
++class RunnerTests(unittest.TestCase):
++    def test_synthesis_stage_and_physical_namespace(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            source = root / "input.txt"
++            source.write_text("opaque fixture")
++            recipe = SimpleNamespace(verify_frozen_files=lambda: {"ok": True}, fingerprint_sha256="frozen")
++            with patch.object(runner.cal.v2, "run", return_value={"exit_code": 0}) as mocked:
++                for arm in ("guided", "exploratory"):
++                    runner.cal.physical({"id": "fixture"}, root / arm, "baseline", recipe, source, "attempt1", stage="synth")
++            commands = [c.args[0] for c in mocked.call_args_list]
++            self.assertTrue(all(c[-1] == "synth" for c in commands))
++            variants = [next(x for x in c if x.startswith("FLOW_VARIANT=")) for c in commands]
++            self.assertNotEqual(*variants)
++
++    def run_mock(self, root, *, noop=False, physical_failure=False, guidance_crash=False, lint_ok=True,
++                 improve=False, repeat_reject=False):
++        args = argparse.Namespace(model="fixture", optimizer_mode="guided", max_attempts=2,
++            max_tokens=8, reasoning_effort="low", temperature=0, max_guidance_groups=3,
++            max_excerpts_per_group=2, max_guidance_chars=6000, **BUDGETS)
++        manifest = SimpleNamespace(top="top", source_files=["input.txt"],
++                                   resolve_path=lambda *a: root / "candidate.txt")
++        pair = {"id": "fixture", "baseline": {"source": str(root / "input.txt"), "top": "top"}}
++        baseline = metrics()
++        selected = {"run": baseline, "period_ns": 1., "module": {}}
++        hashes = [{"status": "passed", "sha256": "same" if noop else str(i), "normalization": "fixture"} for i in range(4)]
++        calls = []
++        def physical(*a, **kw):
++            calls.append(kw.get("stage", "grt"))
++            if kw.get("stage") == "synth":
++                return {"status": "passed"}
++            if improve and a[2] == "reference":
++                return metrics(area_um2=98, hold_ws_ns=.099 if repeat_reject and kw.get("repeat") else .1)
++            return {"status": "failed"} if physical_failure else metrics()
++        from contextlib import ExitStack
++        with ExitStack() as stack:
++            replacements = {"make_manifest": lambda *a: manifest,
++                "make_request": lambda m, d, e, g, b: request(g),
++                "call_groq": lambda **k: json.dumps({"chosen_pattern_id": None}),
++                "lint_candidate": lambda **k: {"ok": lint_ok, "reasons": [] if lint_ok else ["fixture lint error"]},
++                "synthesis_hash": lambda *a: hashes.pop(0)}
++            for name, value in replacements.items():
++                stack.enter_context(patch.object(runner, name, value))
++            packet_fn = stack.enter_context(patch.object(runner, "packet_from_run", side_effect=RuntimeError("fixture guidance crash") if guidance_crash else None,
++                                                           return_value=fixture_packet()))
++            stack.enter_context(patch.object(runner.DesignManifest, "read_json", return_value=manifest))
++            stack.enter_context(patch.object(runner.cal.v2, "elaborate", return_value={}))
++            stack.enter_context(patch.object(runner.cal.v2, "verify", return_value={"status": "passed"}))
++            stack.enter_context(patch.object(runner.cal, "freeze", return_value=(None, root / "candidate.txt", None)))
++            stack.enter_context(patch.object(runner.cal, "physical", side_effect=physical))
++            result = runner.run_one(pair, root, args, baseline_data=(selected, {}))
++        persisted = json.loads((root / "fixture/result.json").read_text())
++        self.assertEqual(result, persisted)
++        return result, calls, packet_fn
++
++    def test_noop_skips_ppa(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            r, calls, _ = self.run_mock(Path(tmp), noop=True)
++            self.assertEqual(calls, ["synth"] * 4)
++            self.assertEqual(r["status"], "no_op_after_synthesis")
++            self.assertTrue(all(a["prompt_artifact"] for a in r["attempts"]))
++
++    def test_fallback_does_not_block_and_refreshes(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            r, calls, diag = self.run_mock(Path(tmp), guidance_crash=True)
++            self.assertEqual(calls.count("grt"), 4)
++            self.assertEqual(diag.call_count, 3)
++            self.assertTrue(all(a["guidance"]["mode_used"] == "exploratory" for a in r["attempts"]))
++            self.assertTrue(all(a["promotion"]["comparable"] for a in r["attempts"]))
++            self.assertEqual(diag.call_args.args[1].name, "candidate.txt")
++
++    def test_incomparable_does_not_refresh(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            r, calls, diag = self.run_mock(Path(tmp), physical_failure=True)
++            self.assertEqual(diag.call_count, 1)
++            self.assertEqual(r["status"], "physical_flow_failed")
++            self.assertFalse(r["attempts"][0]["retry_feedback"]["rejected_transformation_family"])
++
++    def test_lint_failure_has_feedback(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            r, calls, _ = self.run_mock(Path(tmp), lint_ok=False)
++            self.assertEqual(calls, [])
++            self.assertEqual(r["attempts"][0]["retry_feedback"]["lint"], ["fixture lint error"])
++
++    def test_repeat_confirmation_enforces_budget(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            r, calls, _ = self.run_mock(Path(tmp), improve=True, repeat_reject=True)
++            self.assertEqual(r["status"], "analyzed")
++            self.assertEqual(r["attempts"][0]["promotion"]["reason"], "repeat_did_not_confirm")
++            self.assertFalse(r["attempts"][0]["repeat_promotion"]["checks"]["hold_budget"])
++        with tempfile.TemporaryDirectory() as tmp:
++            r, calls, _ = self.run_mock(Path(tmp), improve=True)
++            self.assertEqual(r["status"], "promoted")
++            self.assertEqual(len(r["attempts"]), 1)
++
++    def test_paired_entrypoint_shared_baseline_and_immutable_arms(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp) / "experiment"
++            selected = ({"period_ns": 1}, {})
++            calls = []
++            def one(pair, out, args, baseline_data):
++                calls.append((args.optimizer_mode, out, baseline_data))
++                return {"id": pair["id"], "arm": args.optimizer_mode, "status": "exhausted", "attempts": []}
++            argv = ["runner", "--experiment", "paired-guidance", "--repetitions", "2", "--output", str(root), "--pairs", "fixture"]
++            with patch("sys.argv", argv), patch.dict("os.environ", {"GROQ_API_KEY": "mock-only"}), \
++                 patch.object(runner.cal, "prepare", return_value={"pairs": [{"id": "fixture"}]}), \
++                 patch.object(runner, "select_baseline", return_value=selected) as baseline, \
++                 patch.object(runner, "run_one", side_effect=one):
++                self.assertEqual(runner.main(), 0)
++                self.assertEqual(baseline.call_count, 2)
++                self.assertEqual([c[0] for c in calls], ["guided", "exploratory", "exploratory", "guided"])
++                self.assertTrue(all(c[2] is selected for c in calls))
++                self.assertEqual(len({c[1] for c in calls}), 4)
++                saved = (root / "experiment_summary.json").read_bytes()
++                with self.assertRaises(SystemExit), patch("sys.stderr"):
++                    runner.main()
++                self.assertEqual(saved, (root / "experiment_summary.json").read_bytes())
++
++
++class ReportTests(unittest.TestCase):
++    def test_aggregation(self):
++        a = {"groq_call_attempted": True, "status": "promoted", "promotion": {"comparable": True},
++             "ppa_deltas": {"area_delta_pct": -2}, "guidance": {"mode_used": "exploratory"}}
++        rows = [{"id": "fixture", "arm": "guided", "status": "promoted", "attempts": [a, {**a, "status": "analyzed", "ppa_deltas": {"area_delta_pct": 2}}]}]
++        result = aggregate(rows)
++        self.assertEqual(result["metrics"]["area_delta_pct"]["median"], 0)
++        self.assertEqual(result["metrics"]["area_delta_pct"]["best"], -2)
++        self.assertEqual(result["calls_per_accepted_candidate"], 2)
++        self.assertEqual(result["fallback_rate"], 1)
++        self.assertIsNone(aggregate([])["calls_per_accepted_candidate"])
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            p = root / "guided/repetition_01/fixture/result.json"
++            p.parent.mkdir(parents=True)
++            p.write_text(json.dumps(rows[0]))
++            summary = report(root)
++            self.assertFalse(summary["paired_runs"][0]["complete"])
++            self.assertTrue((root / "experiment_report.md").exists())
++
++
++def run_tests():
++    import sys
++    suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
++    result = unittest.TextTestRunner(verbosity=2).run(suite)
++    if not result.wasSuccessful():
++        raise AssertionError("guided RTL optimization fixture tests failed")
++
++
++if __name__ == "__main__":
++    run_tests()
+--- a/timing_automation/yosys_structure.py
++++ b/timing_automation/yosys_structure.py
+@@ -85,6 +85,36 @@
+ # -----------------------------------------------------------------------------
+ # Yosys executable
+ # -----------------------------------------------------------------------------
++
++
++def normalized_synthesis_hash(data):
++    """Conservative exact structural hash of a mapped Yosys JSON netlist.
++
++    Ignore diagnostic source locations and creator metadata only. Keep names,
++    connectivity, parameters, constants, port order and initialization. This can
++    miss renamed no-ops, but cannot merge graphs merely because cell counts match.
++    """
++    import hashlib
++    import json
++    modules = data.get("modules")
++    if not isinstance(modules, dict) or not modules:
++        raise ValueError("missing synthesized modules")
++    for module in modules.values():
++        if not isinstance(module.get("ports"), dict) or not module["ports"]:
++            raise ValueError("missing synthesis ports")
++        if not isinstance(module.get("cells"), dict) or module.get("processes"):
++            raise ValueError("not a synthesized netlist")
++    def clean(value):
++        if isinstance(value, list):
++            return [clean(v) for v in value]
++        if isinstance(value, dict):
++            return {k: ({a: clean(v) for a, v in item.items() if a not in ("src", "hdlname")}
++                        if k == "attributes" else clean(item)) for k, item in value.items()}
++        return value
++    normalized = clean(modules)
++    return {"schema": "normalized_synthesis_hash/1", "algorithm": "sha256",
++            "normalization": "exact_named_connectivity_without_source_metadata/1",
++            "sha256": hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()}
+ 
+ 
+ def resolve_yosys(explicit: str | None = None) -> Path:

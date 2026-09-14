@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nebula.local/schemas/optimizer_response.schema.json",
+  "title": "nEBULA Optimizer Response",
+  "description": "Canonical response format for an RTL optimization candidate. The fundamental artifact is patches[], not a rewritten whole design or rewritten_module.",
+  "type": "object",
+  "additionalProperties": false,
+
+  "required": [
+    "schema_version",
+    "chosen_pattern_id",
+    "patches",
+    "rationale",
+    "predicted_wns_gain_ns",
+    "self_checks"
+  ],
+
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "2.0"
+    },
+
+    "chosen_pattern_id": {
+      "description": "Optimization pattern used to guide the rewrite. Exploratory rewrites may use null.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+
+    "target_unit_id": {
+      "description": "Optional optimization-unit identifier supplied by build_request.py.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+
+    "patches": {
+      "description": "Ordered local RTL modifications. All coordinates refer to the original SourceBundle snapshot.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/source_patch"
+      }
+    },
+
+    "rationale": {
+      "description": "Short technical explanation of why these patches should improve the diagnosed timing/PPA bottleneck.",
+      "type": "string",
+      "minLength": 1
+    },
+
+    "predicted_wns_gain_ns": {
+      "description": "Model-estimated WNS improvement in nanoseconds. This is advisory only and is never trusted for acceptance.",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+
+    "predicted_area_change_pct": {
+      "description": "Optional model-estimated area percentage change. Negative means smaller.",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+
+    "predicted_power_change_pct": {
+      "description": "Optional model-estimated power percentage change. Negative means lower.",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+
+    "self_checks": {
+      "$ref": "#/$defs/self_checks"
+    }
+  },
+
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+
+    "source_range": {
+      "type": "object",
+      "additionalProperties": false,
+
+      "required": [
+        "start_line",
+        "end_line"
+      ],
+
+      "properties": {
+        "start_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+
+    "source_patch": {
+      "type": "object",
+      "additionalProperties": false,
+
+      "required": [
+        "patch_id",
+        "patch_type",
+        "target_file",
+        "target_module",
+        "original_sha256",
+        "changed_source_range",
+        "replacement_text"
+      ],
+
+      "properties": {
+        "patch_id": {
+          "description": "Unique identifier within this candidate response.",
+          "type": "string",
+          "minLength": 1
+        },
+
+        "patch_type": {
+          "description": "line_range is the normal local edit. whole_module is retained for simple cases but still operates as one bounded source patch.",
+          "type": "string",
+          "enum": [
+            "line_range",
+            "whole_module"
+          ]
+        },
+
+        "target_file": {
+          "description": "SourceBundle manifest-relative file to patch.",
+          "type": "string",
+          "minLength": 1
+        },
+
+        "target_module": {
+          "description": "RTL module containing the changed source range.",
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_$]*$"
+        },
+
+        "original_sha256": {
+          "description": "SHA-256 of target_file from the exact original SourceBundle used to generate this request.",
+          "$ref": "#/$defs/sha256"
+        },
+
+        "changed_source_range": {
+          "description": "1-based inclusive source-line range in the original source snapshot.",
+          "$ref": "#/$defs/source_range"
+        },
+
+        "replacement_text": {
+          "description": "Exact replacement source text for changed_source_range.",
+          "type": "string"
+        },
+
+        "rationale": {
+          "description": "Optional patch-local rationale.",
+          "type": "string"
+        }
+      }
+    },
+
+    "self_checks": {
+      "type": "object",
+      "additionalProperties": false,
+
+      "required": [
+        "interface_unchanged",
+        "parameters_unchanged",
+        "latency_unchanged",
+        "clock_reset_behavior_unchanged",
+        "patches_within_editable_region",
+        "no_new_latches",
+        "no_new_clock_domains"
+      ],
+
+      "properties": {
+        "interface_unchanged": {
+          "type": "boolean"
+        },
+
+        "parameters_unchanged": {
+          "type": "boolean"
+        },
+
+        "latency_unchanged": {
+          "type": "boolean"
+        },
+
+        "clock_reset_behavior_unchanged": {
+          "type": "boolean"
+        },
+
+        "patches_within_editable_region": {
+          "type": "boolean"
+        },
+
+        "no_new_latches": {
+          "type": "boolean"
+        },
+
+        "no_new_clock_domains": {
+          "type": "boolean"
+        },
+
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

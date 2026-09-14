@@ -1,0 +1,26 @@
+{
+  "id": "comparison.comparator_driving_mux",
+  "name": "Simplify comparator driving mux select",
+  "family": "mux_restructuring",
+  "applies_when": {
+    "class": ["comparison"],
+    "pattern_in": ["comparator_driving_mux"],
+    "requires_flags": ["allow_mux_restructuring"]
+  },
+  "latency_effect": "preserves",
+  "equivalence_class": "combinational_same_latency",
+  "sec_recipe": "equiv_make+equiv_induct",
+  "template": "When a mux select is driven by an equality or inequality comparator on the critical path, restructure the comparator to reduce logic depth. Strategies include: (1) converting a wide equality check into a bitwise-XOR-reduce tree, (2) factoring shared subexpressions between the comparison and the mux operands, (3) hoisting the mux ahead of the comparison so cheaper operands are selected before the expensive compare, or (4) replacing a multi-bit equality with a running flag register already computed upstream. The function must be identical; only the combinational cone structure changes.",
+  "example": {
+    "before": "assign mux_out = (count[7:0] == target[7:0]) ? val_a : val_b;",
+    "after":  "wire eq = ~|(count[7:0] ^ target[7:0]); assign mux_out = eq ? val_a : val_b;"
+  },
+  "guardrails": [
+    "The selected output must be bit-for-bit identical to the original for every possible input combination.",
+    "Do not introduce registers, pipeline stages, or change the number of clock cycles.",
+    "Do not modify module ports, the clocked always block, or any path outside the comparator-to-mux cone.",
+    "Do not change reset or enable behaviour of any register.",
+    "Preserve X-propagation semantics: do not speculate a branch that would cause X to appear where it did not before."
+  ],
+  "version": "1.0.0"
+}

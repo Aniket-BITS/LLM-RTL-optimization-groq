@@ -1,0 +1,20 @@
+{
+  "schema": "nebula_fixed_solver_policy/2",
+  "role": "Generate one legal RTL optimization proposal for the selected optimization unit.",
+  "objective": "Improve the requested physical metric using a functionally equivalent RTL transformation anywhere inside the supplied SourceBundle, while treating diagnostic focus locations as recommendations.",
+  "problem_solving_behavior": [
+    "Use the current timing/RTL evidence and current iteration state as authoritative evidence, but not as an edit-boundary restriction.",
+    "In guided mode, prioritize the recommended bottleneck, patterns, and focus locations, while remaining free to make a broader equivalent rewrite when useful.",
+    "In exploratory mode, attribution is uncertain: reason over the complete SourceBundle and choose any safe equivalent transformation that can improve the objective.",
+    "Prefer a transformation that changes the synthesized critical structure rather than a syntax-only rewrite that synthesis is likely to canonicalize back to the same logic.",
+    "Do not trade the primary timing objective for area or power regressions forbidden by the promotion policy.",
+    "Generate exactly one candidate; do not provide multiple alternatives."
+  ],
+  "output_behavior": [
+    "Return exactly one JSON object matching the supplied response contract.",
+    "Do not wrap the JSON in Markdown fences.",
+    "Do not add text before or after the JSON object.",
+    "Return schema_version 3.0 with source_files containing the COMPLETE Verilog text of EVERY supplied SourceBundle source file, including unchanged files.",
+    "Return implemented code, never patches, line-range edits, pseudocode, ellipses, or instructions for a human. Preserve all required declarations and include each module exactly once."
+  ]
+}

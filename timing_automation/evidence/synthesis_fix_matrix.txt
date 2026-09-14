@@ -1,0 +1,28 @@
+DR_RTL synthesis mapping check: ORFS-default-style vs. dr-rtl-oss-backend hardened
+Verified with Yosys 0.33 + Nangate45 liberty against all 20 DR_RTL designs.
+
+design              reset port      ext  default                                      hardened
+vending_machine     reset           v    OK                                           OK
+ticket_machine      clear           v    OK                                           OK
+LSTM                rst             v    OK                                           OK
+DSP                 rstA            v    OK                                           OK
+simple_spi          rst_i           v    OK                                           OK
+cpu_fsm             rst             v    OK                                           OK
+FIFO                rst             v    UNMAPPED (async-load flop)                   OK
+SPI                 rst             v    UNMAPPED (async-load flop)                   OK
+UART                rst             v    UNMAPPED (async-load flop)                   OK
+controller          rst_n           v    OK                                           OK
+router              resetn          v    OK                                           OK
+cpu_pipe            rst             v    OK                                           OK
+pcie                rst             v    OK                                           OK
+datapath            rst_n           v    OK                                           OK
+i2c                 wb_rst_i        v    OK                                           OK
+tv80                reset_n         v    OK                                           OK
+aes                 rst_async_n     sv   OK                                           OK
+communication       reset_n         v    OK                                           OK
+arm_cpu1            rst             v    OK                                           OK
+arm_cpu2            rst             v    OK                                           OK
+
+Summary: default 17/20 clean; hardened 20/20 clean.
+Fixed by hardening: FIFO, SPI, UART (each infers $_ALDFF_* async-load flops;
+Nangate45 has no async-load liberty cell, only async-reset/set).

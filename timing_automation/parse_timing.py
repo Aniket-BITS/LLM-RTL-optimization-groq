@@ -1,0 +1,1149 @@
+#!/usr/bin/env python3
+
+import argparse
+import json
+import re
+from collections import Counter, defaultdict
+from pathlib import Path
+
+
+# ============================================================
+# Paths
+# ============================================================
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_FLOW_DIR = SCRIPT_DIR.parent
+
+
+# ============================================================
+# Regex
+# ============================================================
+
+STARTPOINT_RE = re.compile(
+    r"^Startpoint:\s+(\S+)",
+    re.MULTILINE,
+)
+
+ENDPOINT_RE = re.compile(
+    r"^Endpoint:\s+(\S+)",
+    re.MULTILINE,
+)
+
+PATH_GROUP_RE = re.compile(
+    r"^Path Group:\s+(.+)$",
+    re.MULTILINE,
+)
+
+PATH_TYPE_RE = re.compile(
+    r"^Path Type:\s+(.+)$",
+    re.MULTILINE,
+)
+
+REQUIRED_RE = re.compile(
+    r"([+-]?\d+(?:\.\d+)?)\s+data required time"
+)
+
+SLACK_RE = re.compile(
+    r"([+-]?\d+(?:\.\d+)?)\s+slack\s+\(([^)]+)\)"
+)
+
+NET_RE = re.compile(
+    r"^\s*(\S+)\s+\(net\)\s*$"
+)
+
+
+# ------------------------------------------------------------
+# Timing point line
+#
+# With fanout + cap:
+#
+#  1  3.2655  0.0142  0.1216  0.3348 ^ _2091_/S (FA_X1)
+#
+# Without fanout + cap:
+#
+#              0.0081  0.0001  0.2132 v _2091_/B (FA_X1)
+# ------------------------------------------------------------
+
+PIN_RE = re.compile(
+    r"^\s*"
+    r"(?:(\d+)\s+([+-]?\d+(?:\.\d+)?)\s+)?"
+    r"([+-]?\d+(?:\.\d+)?)\s+"
+    r"([+-]?\d+(?:\.\d+)?)\s+"
+    r"([+-]?\d+(?:\.\d+)?)\s+"
+    r"([\^v])\s+"
+    r"(\S+)\s+"
+    r"\(([^)]+)\)"
+    r"\s*$"
+)
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def normalize_register_name(name: str):
+    """
+    Convert Yosys-generated register instance:
+
+        sum_cd_reg[6]$_DFF_P_
+
+    into:
+
+        sum_cd_reg[6]
+    """
+
+    return re.sub(
+        r"\$_DFF_[A-Za-z0-9_]+_$",
+        "",
+        name,
+    )
+
+
+def base_signal_name(name: str):
+    """
+    Convert:
+
+        sum_cd_reg[13]
+
+    into:
+
+        sum_cd_reg
+
+    Useful for grouping entire RTL stages.
+    """
+
+    return re.sub(
+        r"\[\d+\]$",
+        "",
+        name,
+    )
+
+
+def parse_pin_line(line: str, line_index: int):
+
+    match = PIN_RE.match(line)
+
+    if not match:
+        return None
+
+    (
+        fanout,
+        cap,
+        slew,
+        delay,
+        time,
+        transition,
+        pin_path,
+        cell_type,
+    ) = match.groups()
+
+    if "/" in pin_path:
+        instance, pin = pin_path.rsplit("/", 1)
+    else:
+        instance = None
+        pin = pin_path
+
+    return {
+        "line_index": line_index,
+
+        "fanout":
+            int(fanout)
+            if fanout is not None
+            else None,
+
+        "cap":
+            float(cap)
+            if cap is not None
+            else None,
+
+        "slew": float(slew),
+        "delay": float(delay),
+        "time": float(time),
+
+        "transition":
+            "rise"
+            if transition == "^"
+            else "fall",
+
+        "pin_path": pin_path,
+
+        "instance": instance,
+        "pin": pin,
+
+        "cell_type": cell_type,
+    }
+
+
+# ============================================================
+# Parse one timing path
+# ============================================================
+
+def parse_path_block(block: str, path_id: int):
+
+    start_match = STARTPOINT_RE.search(block)
+    end_match = ENDPOINT_RE.search(block)
+
+    if not start_match or not end_match:
+        raise ValueError(
+            f"Path {path_id}: missing startpoint or endpoint"
+        )
+
+    startpoint_raw = start_match.group(1)
+    endpoint_raw = end_match.group(1)
+
+    startpoint = normalize_register_name(
+        startpoint_raw
+    )
+
+    endpoint = normalize_register_name(
+        endpoint_raw
+    )
+
+    group_match = PATH_GROUP_RE.search(block)
+    type_match = PATH_TYPE_RE.search(block)
+
+    path_group = (
+        group_match.group(1).strip()
+        if group_match
+        else None
+    )
+
+    path_type = (
+        type_match.group(1).strip()
+        if type_match
+        else None
+    )
+
+    # --------------------------------------------------------
+    # Parse every timing-point row
+    # --------------------------------------------------------
+
+    lines = block.splitlines()
+
+    timing_points = []
+    nets_by_line = {}
+
+    for index, line in enumerate(lines):
+
+        pin = parse_pin_line(
+            line,
+            index,
+        )
+
+        if pin:
+            timing_points.append(pin)
+
+        net_match = NET_RE.match(line)
+
+        if net_match:
+            nets_by_line[index] = net_match.group(1)
+
+    # Attach output net to timing point
+    for point in timing_points:
+
+        next_line = point["line_index"] + 1
+
+        while (
+            next_line < len(lines)
+            and not lines[next_line].strip()
+        ):
+            next_line += 1
+
+        point["output_net"] = nets_by_line.get(
+            next_line
+        )
+
+    # --------------------------------------------------------
+    # Locate launch/capture register pins
+    # --------------------------------------------------------
+
+    source_ck = next(
+        (
+            point
+            for point in timing_points
+            if point["pin_path"]
+            == f"{startpoint_raw}/CK"
+        ),
+        None,
+    )
+
+    source_q = next(
+        (
+            point
+            for point in timing_points
+            if point["pin_path"]
+            == f"{startpoint_raw}/Q"
+        ),
+        None,
+    )
+
+    endpoint_d = next(
+        (
+            point
+            for point in timing_points
+            if point["pin_path"]
+            == f"{endpoint_raw}/D"
+        ),
+        None,
+    )
+
+    capture_ck_matches = [
+        point
+        for point in timing_points
+        if point["pin_path"]
+        == f"{endpoint_raw}/CK"
+    ]
+
+    capture_ck = (
+        capture_ck_matches[-1]
+        if capture_ck_matches
+        else None
+    )
+
+    # --------------------------------------------------------
+    # Primary-I/O timing boundaries
+    #
+    # OpenSTA represents top-level ports as timing points such
+    # as:
+    #
+    #   SEL_0 (in)
+    #   Z[28] (out)
+    #
+    # They have no instance name and therefore must be treated
+    # as legal data-path boundaries independently of DFF Q/D
+    # pins.
+    # --------------------------------------------------------
+
+    source_port = next(
+        (
+            point
+            for point in timing_points
+            if (
+                point["pin_path"]
+                == startpoint_raw
+                and point["instance"]
+                is None
+                and str(
+                    point["cell_type"]
+                ).lower()
+                in (
+                    "in",
+                    "input",
+                )
+            )
+        ),
+        None,
+    )
+
+    endpoint_port_matches = [
+        point
+        for point in timing_points
+        if (
+            point["pin_path"]
+            == endpoint_raw
+            and point["instance"]
+            is None
+            and str(
+                point["cell_type"]
+            ).lower()
+            in (
+                "out",
+                "output",
+            )
+        )
+    ]
+
+    endpoint_port = (
+        endpoint_port_matches[-1]
+        if endpoint_port_matches
+        else None
+    )
+
+    data_start = (
+        source_q
+        or source_port
+    )
+
+    data_end = (
+        endpoint_d
+        or endpoint_port
+    )
+
+    # --------------------------------------------------------
+    # Keep only actual data path:
+    #
+    # launch Q -> combinational logic -> capture D
+    #
+    # Clock tree is intentionally discarded.
+    # --------------------------------------------------------
+
+    data_points = []
+
+    if data_start and data_end:
+
+        for point in timing_points:
+
+            if (
+                data_start["line_index"]
+                <= point["line_index"]
+                <= data_end["line_index"]
+            ):
+                data_points.append(point)
+
+    # --------------------------------------------------------
+    # Extract combinational cells
+    # --------------------------------------------------------
+
+    cells = []
+
+    previous_point_for_instance = {}
+
+    for point in data_points:
+
+        instance = point["instance"]
+
+        if not instance:
+            continue
+
+        # Output rows normally have fanout/cap populated.
+        #
+        # Do not include the source DFF itself.
+        if (
+            point["fanout"] is not None
+            and instance != startpoint_raw
+            and not point["cell_type"].startswith("DFF")
+        ):
+
+            input_point = (
+                previous_point_for_instance.get(
+                    instance
+                )
+            )
+
+            cells.append(
+                {
+                    "instance": instance,
+
+                    "type": point["cell_type"],
+
+                    "input_pin":
+                        input_point["pin"]
+                        if input_point
+                        else None,
+
+                    "output_pin":
+                        point["pin"],
+
+                    "transition":
+                        point["transition"],
+
+                    "fanout":
+                        point["fanout"],
+
+                    "cap":
+                        point["cap"],
+
+                    "slew":
+                        point["slew"],
+
+                    "delay_ns":
+                        point["delay"],
+
+                    "arrival_ns":
+                        point["time"],
+
+                    "output_net":
+                        point["output_net"],
+                }
+            )
+
+        previous_point_for_instance[
+            instance
+        ] = point
+
+    # --------------------------------------------------------
+    # Net delay
+    #
+    # Input-pin rows contain interconnect delay.
+    # --------------------------------------------------------
+
+    net_delay_points = []
+
+    if data_start:
+
+        net_delay_points = [
+            point
+            for point in data_points
+            if (
+                point["line_index"]
+                > data_start["line_index"]
+                and point["fanout"] is None
+            )
+        ]
+
+    # --------------------------------------------------------
+    # Arrival / required / slack
+    # --------------------------------------------------------
+
+    arrival_time = (
+        data_end["time"]
+        if data_end
+        else None
+    )
+
+    required_matches = REQUIRED_RE.findall(block)
+
+    required_time = (
+        float(required_matches[-1])
+        if required_matches
+        else None
+    )
+
+    slack_match = SLACK_RE.search(block)
+
+    slack = (
+        float(slack_match.group(1))
+        if slack_match
+        else None
+    )
+
+    status = (
+        slack_match.group(2)
+        if slack_match
+        else None
+    )
+
+    # --------------------------------------------------------
+    # Derived metrics
+    # --------------------------------------------------------
+
+    combinational_delay = None
+
+    if data_start and data_end:
+
+        combinational_delay = (
+            data_end["time"]
+            - data_start["time"]
+        )
+
+    cell_delay_sum = sum(
+        cell["delay_ns"]
+        for cell in cells
+    )
+
+    net_delay_sum = sum(
+        point["delay"]
+        for point in net_delay_points
+    )
+
+    max_fanout = max(
+        (
+            cell["fanout"]
+            for cell in cells
+        ),
+        default=None,
+    )
+
+    cell_type_counts = dict(
+        Counter(
+            cell["type"]
+            for cell in cells
+        )
+    )
+
+    top_delay_cells = sorted(
+        cells,
+        key=lambda cell: cell["delay_ns"],
+        reverse=True,
+    )[:3]
+
+    return {
+        "path_id": path_id,
+
+        # --------------------------------------------
+        # RTL-ish names
+        # --------------------------------------------
+
+        "startpoint": startpoint,
+        "endpoint": endpoint,
+
+        "start_signal":
+            base_signal_name(startpoint),
+
+        "end_signal":
+            base_signal_name(endpoint),
+
+        # --------------------------------------------
+        # Raw synthesis names
+        # --------------------------------------------
+
+        "startpoint_raw":
+            startpoint_raw,
+
+        "endpoint_raw":
+            endpoint_raw,
+
+        # --------------------------------------------
+        # Timing
+        # --------------------------------------------
+
+        "path_group":
+            path_group,
+
+        "path_type":
+            path_type,
+
+        "arrival_time_ns":
+            arrival_time,
+
+        "required_time_ns":
+            required_time,
+
+        "slack_ns":
+            slack,
+
+        "status":
+            status,
+
+        # --------------------------------------------
+        # Clock information
+        # --------------------------------------------
+
+        "launch_clock_arrival_ns":
+            source_ck["time"]
+            if source_ck
+            else None,
+
+        "launch_clock_to_q_ns":
+            source_q["delay"]
+            if source_q
+            else None,
+
+        "launch_q_arrival_ns":
+            source_q["time"]
+            if source_q
+            else None,
+
+        "capture_clock_arrival_ns":
+            capture_ck["time"]
+            if capture_ck
+            else None,
+
+        # --------------------------------------------
+        # Data-path features
+        # --------------------------------------------
+
+        "combinational_delay_ns":
+            round(
+                combinational_delay,
+                4,
+            )
+            if combinational_delay is not None
+            else None,
+
+        "cell_delay_sum_ns":
+            round(
+                cell_delay_sum,
+                4,
+            ),
+
+        "net_delay_sum_ns":
+            round(
+                net_delay_sum,
+                4,
+            ),
+
+        "logic_depth":
+            len(cells),
+
+        "max_fanout":
+            max_fanout,
+
+        "cell_type_counts":
+            cell_type_counts,
+
+        "top_delay_cells": [
+            {
+                "instance":
+                    cell["instance"],
+
+                "type":
+                    cell["type"],
+
+                "delay_ns":
+                    cell["delay_ns"],
+            }
+
+            for cell
+            in top_delay_cells
+        ],
+
+        # Full combinational chain
+        "cells":
+            cells,
+    }
+
+
+# ============================================================
+# Stage grouping
+# ============================================================
+
+def summarize_stage_groups(paths):
+
+    groups = defaultdict(list)
+
+    for path in paths:
+
+        key = (
+            path["start_signal"],
+            path["end_signal"],
+        )
+
+        groups[key].append(path)
+
+    stage_groups = []
+
+    for (
+        start_signal,
+        end_signal
+    ), grouped_paths in groups.items():
+
+        slacks = [
+            path["slack_ns"]
+            for path in grouped_paths
+            if path["slack_ns"] is not None
+        ]
+
+        stage_groups.append(
+            {
+                "start_signal":
+                    start_signal,
+
+                "end_signal":
+                    end_signal,
+
+                "path_count":
+                    len(grouped_paths),
+
+                "worst_slack_ns":
+                    min(slacks)
+                    if slacks
+                    else None,
+
+                "average_slack_ns":
+                    round(
+                        sum(slacks) / len(slacks),
+                        4,
+                    )
+                    if slacks
+                    else None,
+            }
+        )
+
+    stage_groups.sort(
+        key=lambda group:
+            (
+                group["worst_slack_ns"]
+                if group["worst_slack_ns"]
+                is not None
+                else float("inf")
+            )
+    )
+
+    return stage_groups
+
+
+# ============================================================
+# Parse complete report
+# ============================================================
+
+def parse_report(report_file: Path):
+
+    text = report_file.read_text()
+
+    blocks = re.split(
+        r"(?=^Startpoint:)",
+        text,
+        flags=re.MULTILINE,
+    )
+
+    blocks = [
+        block
+        for block in blocks
+        if block.startswith("Startpoint:")
+    ]
+
+    if not blocks:
+        raise RuntimeError(
+            f"No timing paths found in:\n{report_file}"
+        )
+
+    paths = []
+
+    for path_id, block in enumerate(blocks):
+
+        path = parse_path_block(
+            block,
+            path_id,
+        )
+
+        paths.append(path)
+
+    # Sort worst slack first
+    paths.sort(
+        key=lambda path:
+            (
+                path["slack_ns"]
+                if path["slack_ns"]
+                is not None
+                else float("inf")
+            )
+    )
+
+    # Renumber after sorting
+    for path_id, path in enumerate(paths):
+        path["path_id"] = path_id
+
+    valid_slacks = [
+        path["slack_ns"]
+        for path in paths
+        if path["slack_ns"] is not None
+    ]
+
+    violating_paths = [
+        path
+        for path in paths
+        if (
+            path["slack_ns"] is not None
+            and path["slack_ns"] < 0
+        )
+    ]
+
+    summary = {
+        "path_count":
+            len(paths),
+
+        "violating_path_count":
+            len(violating_paths),
+
+        "worst_slack_ns":
+            min(valid_slacks)
+            if valid_slacks
+            else None,
+
+        "worst_path_id":
+            0
+            if paths
+            else None,
+
+        "stage_groups":
+            summarize_stage_groups(paths),
+    }
+
+    return {
+        "source_report":
+            str(report_file),
+
+        "summary":
+            summary,
+
+        "paths":
+            paths,
+    }
+
+
+# ============================================================
+# CLI path helpers
+# ============================================================
+
+def resolve_report_path(report_arg: str, flow_dir: Path):
+    """
+    Resolve an explicit report path.
+
+    Relative paths are first interpreted from the current working
+    directory (convenient when running from flow/), then from flow_dir.
+    """
+
+    report_path = Path(report_arg).expanduser()
+
+    if report_path.is_absolute():
+        return report_path.resolve()
+
+    cwd_candidate = (Path.cwd() / report_path).resolve()
+
+    if cwd_candidate.exists():
+        return cwd_candidate
+
+    return (flow_dir / report_path).resolve()
+
+
+def sanitize_report_tag(report_file: Path):
+    """
+    Convert a report filename into a safe JSON filename tag.
+
+    Example:
+        b_to_y.rpt -> b_to_y
+    """
+
+    tag = re.sub(
+        r"[^A-Za-z0-9_.-]+",
+        "_",
+        report_file.stem,
+    )
+
+    return tag.strip("_.-") or "report"
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def main():
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Parse ORFS/OpenSTA register-to-register "
+            "critical-path reports into JSON."
+        )
+    )
+
+    parser.add_argument(
+        "--variant",
+        required=True,
+        help="FLOW_VARIANT produced by run_flow.py",
+    )
+
+    parser.add_argument(
+        "--design",
+        default="timing_demo",
+    )
+
+    parser.add_argument(
+        "--platform",
+        default="nangate45",
+    )
+
+    parser.add_argument(
+        "--flow-dir",
+        default=str(DEFAULT_FLOW_DIR),
+    )
+
+    parser.add_argument(
+        "--report",
+        "--input",
+        dest="report",
+        default=None,
+        help=(
+            "Optional explicit timing report. "
+            "--input is kept as a backward-compatible alias. "
+            "If omitted, reg2reg_critical_paths.rpt is used."
+        ),
+    )
+
+    parser.add_argument(
+        "--output",
+        default=None,
+    )
+
+    args = parser.parse_args()
+
+    flow_dir = Path(
+        args.flow_dir
+    ).resolve()
+
+    # --------------------------------------------------------
+    # Find timing report
+    # --------------------------------------------------------
+
+    explicit_report = args.report is not None
+
+    if explicit_report:
+
+        report_file = resolve_report_path(
+            args.report,
+            flow_dir,
+        )
+
+        if not report_file.exists():
+            raise FileNotFoundError(
+                "Explicit timing report not found:\n"
+                f"  {report_file}"
+            )
+
+        if not report_file.is_file():
+            raise FileNotFoundError(
+                "Timing report path is not a file:\n"
+                f"  {report_file}"
+            )
+
+    else:
+
+        report_dir = (
+            flow_dir
+            / "reports"
+            / args.platform
+            / args.design
+            / args.variant
+        )
+
+        reg2reg_report = (
+            report_dir
+            / "reg2reg_critical_paths.rpt"
+        )
+
+        generic_report = (
+            report_dir
+            / "critical_paths.rpt"
+        )
+
+        if reg2reg_report.exists():
+
+            report_file = reg2reg_report
+
+        elif generic_report.exists():
+
+            print(
+                "WARNING: reg2reg report missing. "
+                "Using critical_paths.rpt"
+            )
+
+            report_file = generic_report
+
+        else:
+
+            raise FileNotFoundError(
+                "No timing report found.\n"
+                f"Tried:\n"
+                f"  {reg2reg_report}\n"
+                f"  {generic_report}"
+            )
+
+    # --------------------------------------------------------
+    # Parse
+    # --------------------------------------------------------
+
+    result = parse_report(
+        report_file
+    )
+
+    # Add run context without changing the existing paths schema.
+    result["schema_version"] = 2
+    result["design"] = args.design
+    result["platform"] = args.platform
+    result["flow_variant"] = args.variant
+    result["report_name"] = report_file.name
+
+    # --------------------------------------------------------
+    # Output
+    # --------------------------------------------------------
+
+    if args.output:
+
+        output_file = Path(
+            args.output
+        ).expanduser()
+
+        if not output_file.is_absolute():
+            output_file = (
+                Path.cwd() / output_file
+            ).resolve()
+
+    else:
+
+        output_dir = (
+            flow_dir
+            / "ai_runs"
+        )
+
+        output_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        if explicit_report:
+
+            report_tag = sanitize_report_tag(
+                report_file
+            )
+
+            output_file = (
+                output_dir
+                / (
+                    f"{args.variant}_"
+                    f"{report_tag}_timing_paths.json"
+                )
+            )
+
+        else:
+
+            # Preserve the original filename expected by map_to_rtl.py.
+            output_file = (
+                output_dir
+                / f"{args.variant}_timing_paths.json"
+            )
+
+    output_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with open(
+        output_file,
+        "w",
+    ) as file:
+
+        json.dump(
+            result,
+            file,
+            indent=4,
+        )
+
+    # --------------------------------------------------------
+    # Human-readable summary
+    # --------------------------------------------------------
+
+    summary = result["summary"]
+
+    print("\n========================================")
+    print("Timing Path Parser")
+    print("========================================")
+
+    print(
+        f"Report      : {report_file}"
+    )
+
+    print(
+        f"Paths       : {summary['path_count']}"
+    )
+
+    print(
+        "Violations  : "
+        f"{summary['violating_path_count']}"
+    )
+
+    print(
+        "Worst slack : "
+        f"{summary['worst_slack_ns']} ns"
+    )
+
+    print("\nCritical RTL stages:")
+
+    for group in summary["stage_groups"]:
+
+        print(
+            f"  {group['start_signal']}"
+            f" -> "
+            f"{group['end_signal']}"
+            f" | paths={group['path_count']}"
+            f" | worst={group['worst_slack_ns']} ns"
+        )
+
+    print(
+        f"\nJSON written to:\n{output_file}"
+    )
+
+    print("========================================")
+
+
+if __name__ == "__main__":
+    main()

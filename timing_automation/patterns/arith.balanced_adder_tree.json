@@ -1,0 +1,35 @@
+{
+  "id": "arith.balanced_adder_tree",
+  "name": "Balanced adder tree (reassociation)",
+  "family": "arithmetic_restructuring",
+  "applies_when": {
+    "class": [
+      "arithmetic"
+    ],
+    "pattern_in": [
+      "adder",
+      "adder_chain",
+      "adder_followed_by_mux"
+    ],
+    "requires_flags": [
+      "allow_arithmetic_restructuring"
+    ]
+  },
+  "latency_effect": "preserves",
+  "sec_recipe": "equiv_make+equiv_induct",
+  "template": "Rebalance a left-associated addition chain into a balanced tree so the carry/addition depth is log2(N) instead of N. Pure reassociation of the same operands; no new registers.",
+  "example": {
+    "before": "assign y = ((a + b) + c) + d;",
+    "after": "wire [W-1:0] s0 = a + b; wire [W-1:0] s1 = c + d; assign y = s0 + s1;"
+  },
+  "guardrails": [
+    "Do not add or remove registers; latency must be unchanged.",
+    "Do not change operand bit-widths or the module ports.",
+    "Reassociate only; do not drop, reorder-with-sign-change, or introduce new operands."
+  ],
+  "version": "1.0.0",
+  "target_operator_roles": [
+    "$add"
+  ],
+  "expected_equivalence_class": "combinational_same_latency"
+}

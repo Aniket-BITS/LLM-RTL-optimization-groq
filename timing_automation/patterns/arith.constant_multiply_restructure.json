@@ -1,0 +1,34 @@
+{
+  "id": "arith.constant_multiply_restructure",
+  "name": "Restructure constant multiplication",
+  "family": "arithmetic_restructuring",
+  "applies_when": {
+    "class": [
+      "arithmetic",
+      "multiplication"
+    ],
+    "pattern_in": [
+      "constant_multiply"
+    ],
+    "requires_flags": [
+      "allow_arithmetic_restructuring"
+    ]
+  },
+  "latency_effect": "preserves",
+  "sec_recipe": "equiv_make+equiv_induct",
+  "template": "Rewrite multiplication by compile-time constants into an exactly equivalent width-aware arithmetic form when it improves the critical cone.",
+  "example": {
+    "before": "assign y = x * 5;",
+    "after": "assign y = (x << 2) + x;"
+  },
+  "guardrails": [
+    "Preserve signedness, expression width, truncation, and overflow semantics.",
+    "Do not change ports, parameters, state, or latency.",
+    "Apply only when the multiplier operand is provably constant in the RTL."
+  ],
+  "version": "1.0.0",
+  "target_operator_roles": [
+    "$mul"
+  ],
+  "expected_equivalence_class": "combinational_same_latency"
+}

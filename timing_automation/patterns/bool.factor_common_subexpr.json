@@ -1,0 +1,39 @@
+{
+  "id": "bool.factor_common_subexpr",
+  "name": "Factor common Boolean subexpression",
+  "family": "logic_factoring",
+  "applies_when": {
+    "class": [
+      "bitwise",
+      "boolean",
+      "muxing"
+    ],
+    "pattern_in": [],
+    "requires_flags": [
+      "allow_boolean_restructuring"
+    ]
+  },
+  "latency_effect": "preserves",
+  "sec_recipe": "equiv_make+equiv_induct",
+  "template": "Extract a shared Boolean subexpression that is currently recomputed along a long chain, so logic depth on the critical cone drops. Pure factoring; the computed function is identical.",
+  "example": {
+    "before": "assign y = (a & b & c) | (a & b & d);",
+    "after": "wire ab = a & b; assign y = (ab & c) | (ab & d);"
+  },
+  "guardrails": [
+    "Factoring must preserve the exact Boolean function for all inputs.",
+    "Do not introduce registers or change latency.",
+    "Do not touch the module ports or the clocked always block."
+  ],
+  "version": "1.0.0",
+  "target_operator_roles": [
+    "$and",
+    "$or",
+    "$xor",
+    "$not",
+    "$logic_and",
+    "$logic_or",
+    "$logic_not"
+  ],
+  "expected_equivalence_class": "combinational_same_latency"
+}

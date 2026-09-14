@@ -1,0 +1,1004 @@
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/CLI_HELP.txt latency_v1_1_work/phase5_to_9_groq_r3/CLI_HELP.txt
+--- latency_v1_1_orig/phase5_to_9_groq_r3/CLI_HELP.txt	2026-09-13 21:13:02.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/CLI_HELP.txt	2026-09-13 22:35:50.369310732 +0000
+@@ -73,3 +73,9 @@
+   --experiment {single,paired-guidance}
+   --repetitions REPETITIONS
+   --self-test
++
++Latency-aware transformation-choice update (v1.2)
++- Pipeline insertion is available immediately when latency headroom exists; the LLM chooses whether it is worthwhile.
++- Latency is described as a limited resource, not a preferred transformation.
++- --model-history-limit defaults to 5 recent meaningful attempts; older search history is aggregated.
++- Model intent uses primary_transformation + proposed_transformations; backend structural effects and verified latency remain authoritative.
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/COMPACT_CHOICE_CHANGES.patch latency_v1_1_work/phase5_to_9_groq_r3/COMPACT_CHOICE_CHANGES.patch
+--- latency_v1_1_orig/phase5_to_9_groq_r3/COMPACT_CHOICE_CHANGES.patch	1970-01-01 00:00:00.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/COMPACT_CHOICE_CHANGES.patch	2026-09-13 22:39:57.572147037 +0000
+@@ -0,0 +1,13 @@
++diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/CLI_HELP.txt latency_v1_1_work/phase5_to_9_groq_r3/CLI_HELP.txt
++--- latency_v1_1_orig/phase5_to_9_groq_r3/CLI_HELP.txt	2026-09-13 21:13:02.000000000 +0000
+++++ latency_v1_1_work/phase5_to_9_groq_r3/CLI_HELP.txt	2026-09-13 22:35:50.369310732 +0000
++@@ -73,3 +73,9 @@
++   --experiment {single,paired-guidance}
++   --repetitions REPETITIONS
++   --self-test
+++
+++Latency-aware transformation-choice update (v1.2)
+++- Pipeline insertion is available immediately when latency headroom exists; the LLM chooses whether it is worthwhile.
+++- Latency is described as a limited resource, not a preferred transformation.
+++- --model-history-limit defaults to 5 recent meaningful attempts; older search history is aggregated.
+++- Model intent uses primary_transformation + proposed_transformations; backend structural effects and verified latency remain authoritative.
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/COMPACT_CHOICE_VALIDATION_RESULTS.txt latency_v1_1_work/phase5_to_9_groq_r3/COMPACT_CHOICE_VALIDATION_RESULTS.txt
+--- latency_v1_1_orig/phase5_to_9_groq_r3/COMPACT_CHOICE_VALIDATION_RESULTS.txt	1970-01-01 00:00:00.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/COMPACT_CHOICE_VALIDATION_RESULTS.txt	2026-09-13 22:39:08.968233625 +0000
+@@ -0,0 +1,29 @@
++nEBULA latency-aware compact transformation-choice validation
++Date: 2026-09-14
++
++Implemented:
++- LLM remains free to choose pipeline insertion from the first attempt when latency headroom exists.
++- Latency is described as a limited optimization resource; no attempt-count/stagnation transform gate was added.
++- Response schema bumped to 3.3 with primary_transformation + proposed_transformations; vague mixed classification removed.
++- Backend records structural_effects independently from model transformation intent.
++- Model-visible history is bounded to the last 5 meaningful attempts by default; older history is aggregated into search_summary.
++- Latest feedback is compacted to essential PPA/latency fields.
++- Identical Golden/Current-Best RTL source text is not duplicated (existing v1.1 mechanism retained and regression-tested).
++- max completion tokens remains 6500.
++- Existing temporal verifier flatten fix is retained unchanged.
++- Legacy schema-3.0 replay is now strictly validated before compatibility extraction.
++
++Validation performed in assistant environment:
++- Python py_compile: PASS
++- Draft 2020-12 latency schema validation: PASS
++- Focused pytest: 70 passed, 14 skipped
++- run_rtl_opt_groq.py --self-test: PASS (11 tests)
++- top-level self_test.py: PASS
++
++Not run in assistant environment:
++- Groq/API generation
++- Yosys temporal proof
++- synthesis
++- OpenROAD/PPA
++
++A local end-to-end rerun is still required to validate model behavior and the temporal proof after the earlier hierarchy-flattening fix.
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/OPERATING_COMMANDS.md latency_v1_1_work/phase5_to_9_groq_r3/OPERATING_COMMANDS.md
+--- latency_v1_1_orig/phase5_to_9_groq_r3/OPERATING_COMMANDS.md	2026-09-13 21:20:35.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/OPERATING_COMMANDS.md	2026-09-13 22:35:50.369460244 +0000
+@@ -202,3 +202,9 @@
+ pipelining admission, retiming latency shifts, or `max_latency_regression_cycles`.
+ Those are the next feature after this non-latency optimizer core is validated and
+ frozen.
++
++Latency-aware transformation-choice update (v1.2)
++- Pipeline insertion is available immediately when latency headroom exists; the LLM chooses whether it is worthwhile.
++- Latency is described as a limited resource, not a preferred transformation.
++- --model-history-limit defaults to 5 recent meaningful attempts; older search history is aggregated.
++- Model intent uses primary_transformation + proposed_transformations; backend structural effects and verified latency remain authoritative.
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/README_GROQ.md latency_v1_1_work/phase5_to_9_groq_r3/README_GROQ.md
+--- latency_v1_1_orig/phase5_to_9_groq_r3/README_GROQ.md	2026-09-13 21:16:28.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/README_GROQ.md	2026-09-13 22:35:50.369503998 +0000
+@@ -55,3 +55,9 @@
+ - Promotion creates a new Current-Best epoch and optimization continues while attempts remain.
+ - `no_further_optimization` is a legal advisory model response; backend convergence owns termination.
+ - Fixed-cycle latency-changing/pipelining verification is available through `rtl-opt-groq` with `--max-latency-regression-cycles N`. Budget `0` preserves the old cycle-exact path; positive budgets use backend temporal formal against frozen Golden before PPA. Phase-1 is intentionally limited to one existing reference clock and one design-level non-negative cycle shift.
++
++Latency-aware transformation-choice update (v1.2)
++- Pipeline insertion is available immediately when latency headroom exists; the LLM chooses whether it is worthwhile.
++- Latency is described as a limited resource, not a preferred transformation.
++- --model-history-limit defaults to 5 recent meaningful attempts; older search history is aggregated.
++- Model intent uses primary_transformation + proposed_transformations; backend structural effects and verified latency remain authoritative.
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/VERSION.json latency_v1_1_work/phase5_to_9_groq_r3/VERSION.json
+--- latency_v1_1_orig/phase5_to_9_groq_r3/VERSION.json	2026-09-13 21:59:10.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/VERSION.json	2026-09-13 22:39:09.621722436 +0000
+@@ -31,19 +31,40 @@
+     "timing_automation/optimizer_history.py",
+     "timing_automation/prompt_renderer.py",
+     "timing_automation/report_guided_experiment.py",
+-    "timing_automation/run_rtl_opt_groq.py"
++    "timing_automation/run_rtl_opt_groq.py",
++    "timing_automation/response_schema_latency.json",
++    "timing_automation/test_guided_rtl_opt.py",
++    "timing_automation/tests/test_latency_verification.py"
+   ],
++  "compact_transformation_choice": {
++    "backend_structural_effects_recorded": true,
++    "backend_transform_order_gate": false,
++    "completion_token_default": 6500,
++    "identical_golden_current_best_source_dedup": true,
++    "implemented": true,
++    "latency_prompt_policy": "limited resource; prefer latency-neutral when comparably effective; LLM may spend headroom when justified",
++    "mixed_label_removed": true,
++    "model_intent_fields": [
++      "primary_transformation",
++      "proposed_transformations"
++    ],
++    "older_history_aggregated": true,
++    "pipeline_available_when_headroom_exists": true,
++    "recent_meaningful_history_default": 5
++  },
+   "created_files": [
+     "timing_automation/latency_contract.py",
+     "timing_automation/latency_verifier.py",
+     "timing_automation/response_schema_latency.json",
+     "timing_automation/tests/test_latency_verification.py",
+     "LATENCY_VALIDATION_RESULTS.txt",
+-    "LATENCY_AWARE_CHANGES.patch"
++    "LATENCY_AWARE_CHANGES.patch",
++    "COMPACT_CHOICE_CHANGES.patch",
++    "COMPACT_CHOICE_VALIDATION_RESULTS.txt"
+   ],
+   "created_utc_date": "2026-09-14",
+   "default_optimizer_mode": "auto",
+-  "derived_from": "phase5_to_9_groq_r3_latency_aware_v1",
++  "derived_from": "phase5_to_9_groq_r3_latency_aware_v1_1",
+   "guidance_schema": "guidance_packet/1",
+   "latency_changing_support": {
+     "default_max_latency_regression_cycles": 0,
+@@ -62,32 +83,25 @@
+   },
+   "legacy_shared_response_schema_version": "3.0",
+   "new_file_sha256": {
+-    "CLI_HELP.txt": "481fab9e3eb88303fc4b0078437f8ad325a24f2dd4b980247981311227ae36cb",
++    "CLI_HELP.txt": "ec09855357bdd04768dfaebb68106751a742d96a1c9e0b8f305e3fdfa97b00c3",
++    "COMPACT_CHOICE_CHANGES.patch": "20da9fd7ed6083939600f34992529e773c7b01a3a80da96890d1708db5ad7bb3",
++    "COMPACT_CHOICE_VALIDATION_RESULTS.txt": "a91df30fba180bc4feac712434f2c44106ce901064e98dac7ad6e3cc5ce41e8f",
++    "LATENCY_AWARE_CHANGES.patch": "a91b0146b455b5200e04b7d4c9987ce1b91698dd6e78587d951ba8c9ee583119",
+     "LATENCY_VALIDATION_RESULTS.txt": "79d0114106b48f39b58ffacd4d67de289925e676b8f0ac2622058d44f099ef8f",
+-    "OPERATING_COMMANDS.md": "f0fe5216016b9b243e62494fca2f04c35399015c5de1649732ab67af121bd052",
+-    "README_GROQ.md": "c283d999d47588b3cdbad1a16038524605854e074bdabaa2e45275628e2e0a98",
++    "OPERATING_COMMANDS.md": "fdb3836590f553ce6d55934be1dd963caee072be9eb099d88b25cb57a64e6667",
++    "README_GROQ.md": "8b6103d207680a73ad466f1f53b8b0abba2c01b849e80fe7027264be26b9e5f9",
+     "VALIDATION.md": "59302e85db69adeaf1ff867695a06d675f04fb368f19b1b60cd410e5931eac59",
+-    "self_test.py": "66d7017ee4bdb915d166d719873763d822936f83083038af64ee1842ccb34655",
+-    "timing_automation/calibrate_pairs_v3.py": "a85c48a282e5b27857a2e22b2ffeea4243f1ee8f14340ae1c1d83a86e41b33d6",
+     "timing_automation/evaluate_candidate.py": "0ac8498a510b95bb85e76f944b0d359bd099ed38427ac2d24c47930ef61c9d1d",
+-    "timing_automation/extract_candidate.py": "051e3fca85b5244b66d3a6f5b775fc59708423822ef22e21d21a3ef3a094eb75",
+-    "timing_automation/guidance_packet.py": "0e5a57ff2af274bad9393b91bcd3564916738525b87aa5df99f33106a2211197",
++    "timing_automation/extract_candidate.py": "c0115c3ab807c1a48db47475e7e0cae6ecb13b19e1bd45648f371ccd0541a168",
+     "timing_automation/latency_contract.py": "73c129923935d344d4bd3fd232f86b0c9198966f76526c557ddffcb693255683",
+     "timing_automation/latency_verifier.py": "ea5c9374987ed9c95a44b0ffff3b117b368c547caaf0ffcb425be0231b1881aa",
+-    "timing_automation/lint_candidate.py": "5fce430c69bb879c313e9b9b382b9b2bd5c43d5cd156a7b8a917398b04f4e07b",
+-    "timing_automation/optimizer_history.py": "9fc3b4e7c24539540990836eb67f16eee89be43010d1030d7afae9db40a5dccb",
+-    "timing_automation/prompt_renderer.py": "7f92fb36c0205cd2a70ba5162118cfeea6e8c7f6a3b1ba4bb4d5429a02d6db9d",
+-    "timing_automation/report_guided_experiment.py": "1df7d2fe46436e0645851760ec62aa923fd685f9b37c3f87abfaa023d1aa5f7f",
+-    "timing_automation/response_schema_latency.json": "75ca77c5002a989a370d1d80f1794271866d8417fd91d273f0263ce90a274660",
+-    "timing_automation/response_schema_prefreeze.json": "b57abe316200f11818bc4bed35ffaab4dd70c222164db9751c0433a28a4d1746",
+-    "timing_automation/run_optimizer.py": "1de91e0ef8b9392922a66833c7ca54ded8cbded47dab10748784b928cd671132",
+-    "timing_automation/run_rtl_opt_groq.py": "964166a01b236848d50f867113a6a99050c1aa1b32ae8d10e7655092d7438133",
+-    "timing_automation/source_bundle.py": "44b99f5b460cf87ced74b9cc8caa3f74113cf0f86cdd82bc1cd885add124cb07",
+-    "timing_automation/test_guided_rtl_opt.py": "f661da6e819f11c532a544046d7c59a23a07981e91663c71651697185d1721e3",
+-    "timing_automation/tests/test_complete_verilog.py": "1343b4d715c248218be0884c58ab7cdfd68896fa0b913b9c59bec0120c117feb",
+-    "timing_automation/tests/test_current_best_iteration.py": "e188cc1dc50c9b8ea49134506d5a1c40be3165f76d08ead3e465ba3e73c1664d",
+-    "timing_automation/tests/test_latency_verification.py": "b542c329b9997cff9fd2d9af68fad2573bf17df2aef9cc985091e64ae61d2038",
+-    "timing_automation/yosys_structure.py": "66e600a351df52dc5d3f81e1a5c4ac72ba4be768b849ceb18499a47f3a258da1"
++    "timing_automation/optimizer_history.py": "ca633c83c38b0a8582d85f422a25935c8710a1b014ba8f43c71252e8236e47cd",
++    "timing_automation/prompt_renderer.py": "9cb1abdc508781839be7aafb92706f12a33a10deef9d7a445b0a1c2a1c580236",
++    "timing_automation/report_guided_experiment.py": "3579943ae6b9b0bbd8f61c4030f8f37f9d8585de142621fb8379502be2769be0",
++    "timing_automation/response_schema_latency.json": "161f69ba7274234db1072770047e9e1e3a4f7280fc15a286029edee64df523f5",
++    "timing_automation/run_rtl_opt_groq.py": "45dc6be65ef34057772555bb5739f79a49ff9281075e96a7c9b8a620037a56b1",
++    "timing_automation/test_guided_rtl_opt.py": "fb6a275b5a9c55a3df53f3dab601e5ed2d733dd9bee2ef0d789c9aa076ccd7fb",
++    "timing_automation/tests/test_latency_verification.py": "ccd01d06bfedc3502f17988b80343f643a52cea9eabc071cd65897cb575a428a"
+   },
+   "old_run_outputs_copied": false,
+   "optimizer_core_freeze_candidate": true,
+@@ -132,7 +146,7 @@
+     "validation": "static only; no project tests, Groq, Yosys, formal, synthesis, OpenROAD or PPA run by assistant"
+   },
+   "provider": "groq",
+-  "response_schema_version": "3.2",
++  "response_schema_version": "3.3",
+   "result_schema": "groq_result/5",
+   "rtl_opt_groq_default_max_tokens": 6500,
+   "rtl_opt_groq_response_schema": "timing_automation/response_schema_latency.json",
+@@ -174,16 +188,16 @@
+     "timing_automation/yosys_structure.py": "e4b3eb7f948233dbe98d47900e61bcec3476369c488cd9fa3825c326793abdf7"
+   },
+   "validation": {
+-    "focused_pytest": "59 passed, 14 skipped",
++    "focused_pytest": "70 passed, 14 skipped",
+     "json_schema_draft_2020_12_validation": "passed",
+     "live_groq_run": false,
+     "modified_python_py_compile": "passed",
+-    "note": "Runtime user artifact exposed hierarchical SAT-model setup bug; fixed by flattening completed latency harness. Pure-Python regression passed; local rerun required to validate temporal proof after fix.",
++    "note": "Compact-choice/token controls validated statically and with pure-Python tests; local EDA/Groq rerun required.",
+     "openroad_ppa_run": false,
+-    "runner_self_test": "9 passed",
+-    "static_invariant_audit": "passed",
++    "runner_self_test": "11 passed",
+     "synthesis_run": false,
++    "top_level_self_test": "passed",
+     "yosys_temporal_formal_run": false
+   },
+-  "version": "phase5_to_9_groq_r3_latency_aware_v1_1"
++  "version": "phase5_to_9_groq_r3_latency_aware_v1_2"
+ }
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/extract_candidate.py latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/extract_candidate.py
+--- latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/extract_candidate.py	2026-09-13 21:15:59.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/extract_candidate.py	2026-09-13 22:38:16.886099521 +0000
+@@ -1277,7 +1277,7 @@
+ def validate_prefreeze_payload(payload: Mapping[str, Any]) -> None:
+     from jsonschema import Draft202012Validator
+     version = payload.get("schema_version")
+-    schema_name = "response_schema_latency.json" if version == "3.2" else "response_schema_prefreeze.json"
++    schema_name = "response_schema_latency.json" if version in {"3.2", "3.3"} else "response_schema_prefreeze.json"
+     schema = json.loads((SCRIPT_DIR / schema_name).read_text())
+     errors = sorted(Draft202012Validator(schema).iter_errors(payload), key=lambda e: list(e.path))
+     if errors:
+@@ -1322,13 +1322,13 @@
+     *,
+     bundle: SourceBundle | None = None,
+ ) -> ExtractedCandidate | StopRecommendation:
+-    """Parse one schema-3.1/3.2 optimizer decision.
++    """Parse one schema-3.1/3.2/3.3 optimizer decision.
+ 
+     Candidate responses are validated against the selected editing-base bundle.
+     Stop recommendations contain no RTL and are intentionally advisory.
+     """
+     payload = extract_json_response(raw_text)
+-    if payload.get("schema_version") in {"3.1", "3.2"}:
++    if payload.get("schema_version") in {"3.1", "3.2", "3.3"}:
+         validate_prefreeze_payload(payload)
+         if payload.get("decision") == "no_further_optimization":
+             return StopRecommendation(payload=dict(payload))
+@@ -1345,12 +1345,24 @@
+     """Extract and validate one materializable candidate response."""
+     validate_response_schema_file()
+     payload = extract_json_response(raw_text)
+-    if payload.get("schema_version") in {"3.1", "3.2"}:
++    if payload.get("schema_version") in {"3.1", "3.2", "3.3"}:
+         validate_prefreeze_payload(payload)
+         if payload.get("decision") != "propose_candidate":
+             raise CandidateSchemaError("no_further_optimization is not a materializable candidate")
+         return extract_complete_sources(payload, bundle)
+     if payload.get("schema_version") == "3.0" or "source_files" in payload:
++        # Historical schema-3.0 complete-source replay.  Validate true 3.0
++        # responses strictly so unexpected patch-shaped fields cannot slip
++        # through the compatibility extractor.
++        if payload.get("schema_version") == "3.0":
++            from jsonschema import Draft202012Validator
++            legacy_schema = json.loads((SCRIPT_DIR / "response_schema.json").read_text())
++            errors = sorted(Draft202012Validator(legacy_schema).iter_errors(payload), key=lambda e: list(e.path))
++            if errors:
++                error = errors[0]
++                location = ".".join(str(part) for part in error.path)
++                prefix = f" at {location}" if location else ""
++                raise CandidateSchemaError("schema-3.0 response" + prefix + ": " + error.message)
+         # Historical schema-3.0 complete-source replay.
+         if bundle is None:
+             raise CandidateSchemaError("complete-source validation requires a manifest and SourceBundle")
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/optimizer_history.py latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/optimizer_history.py
+--- latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/optimizer_history.py	2026-09-13 21:19:28.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/optimizer_history.py	2026-09-13 22:35:50.368451142 +0000
+@@ -4,7 +4,7 @@
+ 
+ import json
+ from pathlib import Path
+-from typing import Any, Dict, List, Mapping, Optional, Set
++from typing import Any, Dict, List, Mapping, Optional, Set, Sequence, Tuple
+ 
+ 
+ def guided_attempt_record(row):
+@@ -25,6 +25,9 @@
+         "decision": row.get("model_decision", "propose_candidate"),
+         "editing_base": row.get("editing_base"),
+         "attempted_transformation_family": row.get("attempted_transformation_family"),
++        "primary_transformation": row.get("primary_transformation"),
++        "proposed_transformations": list(row.get("proposed_transformations") or []),
++        "structural_effects": dict(row.get("structural_effects") or {}),
+         "family_provenance": row.get("family_provenance"),
+         "evidence_fingerprint": row.get("guidance", {}).get("evidence_fingerprint"),
+         "source_duplicate": bool(exact_duplicate.get("duplicate")),
+@@ -52,24 +55,103 @@
+     }
+ 
+ 
++def _compact_ppa_deltas(value: Mapping[str, Any] | None) -> Dict[str, Any]:
++    value = value if isinstance(value, Mapping) else {}
++    keys = (
++        "setup_slack_delta_ns", "hold_slack_delta_ns",
++        "area_delta_pct", "power_delta_pct",
++    )
++    return {key: value.get(key) for key in keys if value.get(key) is not None}
++
++
+ def compact_attempt_for_model(row):
+-    """Return only the previous-attempt facts useful for model search strategy.
++    """Return only previous-attempt facts useful for model search strategy.
+ 
+-    Raw source hashes, normalized synthesis hashes, logs and backend databases are
+-    intentionally omitted.  The model receives a short implementation-class id.
++    Raw RTL, source hashes, normalized synthesis hashes, logs and backend databases
++    are intentionally omitted. Transformation labels remain advisory; verified
++    latency/PPA outcomes are backend facts.
+     """
+     record = guided_attempt_record(row)
+-    return {
++    compact = {
+         key: record.get(key)
+         for key in (
+-            "attempt", "decision", "editing_base", "attempted_transformation_family",
++            "attempt", "decision", "editing_base", "primary_transformation",
++            "proposed_transformations", "attempted_transformation_family",
+             "source_duplicate", "synthesis_implementation", "formal_result",
+             "predicted_latency_change_cycles", "verified_latency_change_cycles",
+             "verified_total_latency_regression_cycles", "latency_result",
+-            "meaningful_iteration_number", "ppa_deltas", "promoted", "outcome_type", "rejection_reason",
++            "meaningful_iteration_number", "promoted", "outcome_type", "rejection_reason",
+         )
+         if record.get(key) not in (None, {}, [])
+     }
++    ppa = _compact_ppa_deltas(record.get("ppa_deltas"))
++    if ppa:
++        compact["ppa_deltas"] = ppa
++    effects = record.get("structural_effects")
++    if effects:
++        compact["structural_effects"] = effects
++    return compact
++
++
++def model_history_context(
++    rows: Sequence[Mapping[str, Any]],
++    *,
++    recent_limit: int = 5,
++) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
++    """Return bounded recent meaningful attempts plus a tiny all-history summary."""
++    recent_limit = max(1, int(recent_limit))
++    meaningful_rows = [row for row in rows if bool(row.get("meaningful_iteration"))]
++    recent = [compact_attempt_for_model(row) for row in meaningful_rows[-recent_limit:]]
++
++    explored = set()
++    pipeline_attempts = 0
++    latency_neutral_attempts = 0
++    latency_changing_attempts = 0
++    best_neutral_setup = None
++    best_latency_setup = None
++
++    for row in meaningful_rows:
++        primary = row.get("primary_transformation")
++        proposed = list(row.get("proposed_transformations") or [])
++        legacy = row.get("optimization_class")
++        if isinstance(primary, str) and primary:
++            explored.add(primary)
++        for item in proposed:
++            if isinstance(item, str) and item:
++                explored.add(item)
++        if not proposed and isinstance(legacy, str) and legacy:
++            legacy_map = {"pipelining": "pipeline_insertion", "retiming": "register_retiming"}
++            explored.add(legacy_map.get(legacy, legacy))
++            proposed = [legacy_map.get(legacy, legacy)]
++        if "pipeline_insertion" in proposed or primary == "pipeline_insertion":
++            pipeline_attempts += 1
++
++        lr = row.get("latency_result") if isinstance(row.get("latency_result"), Mapping) else {}
++        delta = lr.get("iteration_latency_delta_cycles")
++        setup = (row.get("ppa_deltas") or {}).get("setup_slack_delta_ns")
++        if delta == 0:
++            latency_neutral_attempts += 1
++            if isinstance(setup, (int, float)):
++                best_neutral_setup = setup if best_neutral_setup is None else max(best_neutral_setup, setup)
++        elif isinstance(delta, int) and delta > 0:
++            latency_changing_attempts += 1
++            if isinstance(setup, (int, float)):
++                best_latency_setup = setup if best_latency_setup is None else max(best_latency_setup, setup)
++
++    summary: Dict[str, Any] = {
++        "model_calls": len(rows),
++        "meaningful_attempts": len(meaningful_rows),
++        "recent_meaningful_attempts_sent": len(recent),
++        "latency_neutral_attempts": latency_neutral_attempts,
++        "latency_changing_attempts": latency_changing_attempts,
++        "pipeline_insertion_attempts": pipeline_attempts,
++        "explored_transformations": sorted(explored),
++    }
++    if best_neutral_setup is not None:
++        summary["best_latency_neutral_setup_gain_ns"] = best_neutral_setup
++    if best_latency_setup is not None:
++        summary["best_latency_changing_setup_gain_ns"] = best_latency_setup
++    return recent, summary
+ 
+ 
+ def retry_feedback(row):
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py
+--- latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py	2026-09-13 21:15:01.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/prompt_renderer.py	2026-09-13 22:37:27.818480813 +0000
+@@ -47,17 +47,37 @@
+         latest_feedback = {
+             key: feedback.get(key)
+             for key in (
+-                "outcome_type", "instruction", "ppa_deltas", "rejection_reason",
+-                "synthesis_implementation", "duplicate_of_attempt", "latency_result",
++                "outcome_type", "instruction", "rejection_reason",
++                "synthesis_implementation", "duplicate_of_attempt",
+                 "verified_latency_change_cycles", "predicted_latency_change_cycles",
+             )
+             if feedback.get(key) is not None
+         }
++        ppa = feedback.get("ppa_deltas") if isinstance(feedback.get("ppa_deltas"), Mapping) else {}
++        compact_ppa = {
++            key: ppa.get(key)
++            for key in ("setup_slack_delta_ns", "hold_slack_delta_ns", "area_delta_pct", "power_delta_pct")
++            if ppa.get(key) is not None
++        }
++        if compact_ppa:
++            latest_feedback["ppa_deltas"] = compact_ppa
++        latency = feedback.get("latency_result") if isinstance(feedback.get("latency_result"), Mapping) else {}
++        compact_latency = {
++            key: latency.get(key)
++            for key in (
++                "status", "verified_shift_cycles", "iteration_latency_delta_cycles",
++                "verified_total_latency_regression_cycles", "max_latency_regression_cycles",
++            )
++            if latency.get(key) is not None
++        }
++        if compact_latency:
++            latest_feedback["latency_result"] = compact_latency
+ 
+     def advisory_chars() -> int:
+         return len(json.dumps({
+             "guidance": packet,
+             "previous_attempts": history,
++            "search_summary": request.get("search_summary") or {},
+             "latest_feedback": latest_feedback,
+         }, sort_keys=True))
+ 
+@@ -82,11 +102,14 @@
+         "identities and SHA-256 values; do not copy bundle hashes, design identities, or per-file hashes into "
+         "the response. In this complete-source format, return exactly the source-file set present in the "
+         "selected editing base; do not introduce or omit source files. If a helper module is useful, define it in an "
+-        "existing returned .v file. Preserve the top-level interface and parameters. Latency is policy-controlled: "
+-        "you may pipeline or legally retime using only an existing permitted clock/reset domain when the supplied "
+-        "latency_policy allows it. Do not introduce clocks, clock domains, latches, or change the externally visible "
+-        "clock/reset contract. predicted_latency_change_cycles is advisory; nEBULA independently proves the actual "
+-        "total latency relation against frozen GOLDEN and rejects only verified policy violations. Bottleneck locations "
++        "existing returned .v file. Preserve the top-level interface and parameters. Latency is a limited optimization "
++        "resource: prefer latency-neutral transformations when they are expected to provide comparable benefit, but you "
++        "may spend available latency whenever you judge the expected timing/PPA benefit justifies it. Pipeline insertion "
++        "is available from the first attempt when headroom exists; there is no backend transform-order gate. Added or "
++        "retimed state must use an existing permitted clock/reset domain; do not introduce clocks, clock domains, latches, "
++        "or change the external clock/reset contract. predicted_latency_change_cycles is advisory; backend proof is "
++        "authoritative. Describe intent with primary_transformation plus concrete proposed_transformations; do not use a "
++        "vague mixed label. Bottleneck locations "
+         "and target_unit_id are diagnostic evidence only and are never edit boundaries.\n\n"
+         "Do not return GOLDEN unchanged. Do not return CURRENT BEST unchanged. Do not reproduce any prior "
+         "candidate unchanged. Avoid intentionally reproducing implementation classes that backend synthesis "
+@@ -132,6 +155,7 @@
+         },
+         "guidance": packet,
+         "previous_attempts": history,
++        "search_summary": request.get("search_summary") or {},
+         "response_schema": schema,
+     }
+     if latest_feedback:
+@@ -142,6 +166,7 @@
+     budget["total_prompt_chars"] = len(system) + len(user)
+     budget["cap_scope"] = "guidance + compact previous-attempt history; Golden/Current-Best source contracts are protected"
+     budget["history_entries_sent"] = len(history)
++    budget["search_summary_chars"] = len(json.dumps(request.get("search_summary") or {}, sort_keys=True))
+     return system, user, packet, budget
+ 
+ 
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/report_guided_experiment.py latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/report_guided_experiment.py
+--- latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/report_guided_experiment.py	2026-09-13 21:13:00.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/report_guided_experiment.py	2026-09-13 22:35:50.369139767 +0000
+@@ -63,7 +63,11 @@
+         "latency_relation_mismatch_count": sum(x.get("status") == "no_allowed_latency_relation" for x in latency_results),
+         "formal_inconclusive_count": sum(x.get("status") in {"inconclusive_timeout", "tool_failure", "unsupported_contract"}
+                                          for x in latency_results),
+-        "pipelining_candidate_count": sum(a.get("optimization_class") == "pipelining" for a in attempts),
++        "pipelining_candidate_count": sum(
++            a.get("primary_transformation") == "pipeline_insertion"
++            or "pipeline_insertion" in (a.get("proposed_transformations") or [])
++            for a in attempts
++        ),
+         "latency_prediction_error_median_cycles": median(prediction_errors) if prediction_errors else None,
+         "metrics": metrics,
+     }
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json
+--- latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json	2026-09-13 21:03:43.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/response_schema_latency.json	2026-09-13 22:35:50.367865410 +0000
+@@ -1,11 +1,15 @@
+ {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "$id": "https://nebula.local/schemas/optimizer_response_latency.schema.json",
+-  "title": "nEBULA Latency-Aware Optimizer Response",
+-  "description": "One latency-aware optimizer decision. The LLM chooses only an editing base and transformation intent; backend owns identity, formal truth, verified latency, duplicate truth, and promotion.",
++  "title": "nEBULA Latency-Aware Optimizer Response 3.3",
++  "description": "One latency-aware optimizer decision with explicit transformation intent. The LLM chooses editing base and intended transformations; backend owns identity, structural observations, formal truth, verified latency, duplicate truth, and promotion.",
+   "oneOf": [
+-    {"$ref": "#/$defs/candidate_response"},
+-    {"$ref": "#/$defs/stop_response"}
++    {
++      "$ref": "#/$defs/candidate_response"
++    },
++    {
++      "$ref": "#/$defs/stop_response"
++    }
+   ],
+   "$defs": {
+     "candidate_response": {
+@@ -15,7 +19,8 @@
+         "schema_version",
+         "decision",
+         "editing_base",
+-        "optimization_class",
++        "primary_transformation",
++        "proposed_transformations",
+         "chosen_pattern_id",
+         "target_unit_id",
+         "source_files",
+@@ -28,19 +33,65 @@
+         "self_checks"
+       ],
+       "properties": {
+-        "schema_version": {"type": "string", "const": "3.2"},
+-        "decision": {"type": "string", "const": "propose_candidate"},
++        "schema_version": {
++          "type": "string",
++          "const": "3.3"
++        },
++        "decision": {
++          "type": "string",
++          "const": "propose_candidate"
++        },
+         "editing_base": {
+           "type": "string",
+-          "enum": ["golden", "current_best"],
++          "enum": [
++            "golden",
++            "current_best"
++          ],
+           "description": "Construction/materialization base only. Formal remains against Golden and PPA remains against Current Best."
+         },
+-        "optimization_class": {
++        "primary_transformation": {
+           "type": "string",
+-          "enum": ["pipelining", "logic_restructuring", "retiming", "fsm_optimization", "mixed", "custom"]
++          "enum": [
++            "pipeline_insertion",
++            "register_retiming",
++            "logic_restructuring",
++            "mux_restructuring",
++            "arithmetic_restructuring",
++            "fsm_reencoding",
++            "fsm_restructuring",
++            "constant_optimization",
++            "resource_sharing",
++            "custom"
++          ],
++          "description": "Advisory primary transformation intent. Backend-observed structural effects and verified latency are authoritative."
++        },
++        "proposed_transformations": {
++          "type": "array",
++          "minItems": 1,
++          "maxItems": 6,
++          "uniqueItems": true,
++          "items": {
++            "type": "string",
++            "enum": [
++              "pipeline_insertion",
++              "register_retiming",
++              "logic_restructuring",
++              "mux_restructuring",
++              "arithmetic_restructuring",
++              "fsm_reencoding",
++              "fsm_restructuring",
++              "constant_optimization",
++              "resource_sharing",
++              "custom"
++            ]
++          },
++          "description": "Advisory set of concrete transformations attempted. Avoid vague mixed labels."
+         },
+         "chosen_pattern_id": {
+-          "type": ["string", "null"],
++          "type": [
++            "string",
++            "null"
++          ],
+           "description": "Advisory pattern/family label."
+         },
+         "target_unit_id": {
+@@ -48,19 +99,44 @@
+           "const": "whole_design",
+           "description": "Diagnostic whole-design unit; never an edit boundary."
+         },
+-        "rationale": {"type": "string", "minLength": 1},
+-        "predicted_wns_gain_ns": {"type": ["number", "null"]},
+-        "predicted_area_change_pct": {"type": ["number", "null"]},
+-        "predicted_power_change_pct": {"type": ["number", "null"]},
++        "rationale": {
++          "type": "string",
++          "minLength": 1
++        },
++        "predicted_wns_gain_ns": {
++          "type": [
++            "number",
++            "null"
++          ]
++        },
++        "predicted_area_change_pct": {
++          "type": [
++            "number",
++            "null"
++          ]
++        },
++        "predicted_power_change_pct": {
++          "type": [
++            "number",
++            "null"
++          ]
++        },
+         "predicted_latency_change_cycles": {
+-          "type": ["integer", "null"],
++          "type": [
++            "integer",
++            "null"
++          ],
+           "description": "Advisory prediction relative to the unchanged Current Best. Backend independently proves total latency relative to frozen Golden."
+         },
+         "sequential_changes": {
+           "type": "array",
+-          "items": {"$ref": "#/$defs/sequential_change"}
++          "items": {
++            "$ref": "#/$defs/sequential_change"
++          }
++        },
++        "self_checks": {
++          "$ref": "#/$defs/self_checks"
+         },
+-        "self_checks": {"$ref": "#/$defs/self_checks"},
+         "source_files": {
+           "type": "array",
+           "minItems": 1,
+@@ -68,10 +144,19 @@
+           "items": {
+             "type": "object",
+             "additionalProperties": false,
+-            "required": ["target_file", "verilog"],
++            "required": [
++              "target_file",
++              "verilog"
++            ],
+             "properties": {
+-              "target_file": {"type": "string", "minLength": 1},
+-              "verilog": {"type": "string", "minLength": 1}
++              "target_file": {
++                "type": "string",
++                "minLength": 1
++              },
++              "verilog": {
++                "type": "string",
++                "minLength": 1
++              }
+             }
+           }
+         }
+@@ -80,24 +165,52 @@
+     "stop_response": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["schema_version", "decision", "rationale"],
++      "required": [
++        "schema_version",
++        "decision",
++        "rationale"
++      ],
+       "properties": {
+-        "schema_version": {"type": "string", "const": "3.2"},
+-        "decision": {"type": "string", "const": "no_further_optimization"},
+-        "rationale": {"type": "string", "minLength": 1}
++        "schema_version": {
++          "type": "string",
++          "const": "3.3"
++        },
++        "decision": {
++          "type": "string",
++          "const": "no_further_optimization"
++        },
++        "rationale": {
++          "type": "string",
++          "minLength": 1
++        }
+       }
+     },
+     "sequential_change": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["kind", "clock_domain", "rationale"],
++      "required": [
++        "kind",
++        "clock_domain",
++        "rationale"
++      ],
+       "properties": {
+         "kind": {
+           "type": "string",
+-          "enum": ["pipeline_register", "retimed_register", "fsm_state_change", "other_intentional_state"]
++          "enum": [
++            "pipeline_register",
++            "retimed_register",
++            "fsm_state_change",
++            "other_intentional_state"
++          ]
+         },
+-        "clock_domain": {"type": "string", "minLength": 1},
+-        "rationale": {"type": "string", "minLength": 1}
++        "clock_domain": {
++          "type": "string",
++          "minLength": 1
++        },
++        "rationale": {
++          "type": "string",
++          "minLength": 1
++        }
+       }
+     },
+     "self_checks": {
+@@ -115,17 +228,42 @@
+         "no_new_clock_domains"
+       ],
+       "properties": {
+-        "interface_unchanged": {"type": "boolean"},
+-        "parameters_unchanged": {"type": "boolean"},
+-        "latency_policy_considered": {"type": "boolean"},
+-        "latency_unchanged": {"type": "boolean"},
+-        "clock_reset_behavior_unchanged": {"type": "boolean"},
+-        "uses_only_permitted_clock_reset_domains": {"type": "boolean"},
+-        "intentional_sequential_changes_declared": {"type": "boolean"},
+-        "source_bundle_targets_valid": {"type": "boolean"},
+-        "no_new_latches": {"type": "boolean"},
+-        "no_new_clock_domains": {"type": "boolean"},
+-        "notes": {"type": "array", "items": {"type": "string"}}
++        "interface_unchanged": {
++          "type": "boolean"
++        },
++        "parameters_unchanged": {
++          "type": "boolean"
++        },
++        "latency_policy_considered": {
++          "type": "boolean"
++        },
++        "latency_unchanged": {
++          "type": "boolean"
++        },
++        "clock_reset_behavior_unchanged": {
++          "type": "boolean"
++        },
++        "uses_only_permitted_clock_reset_domains": {
++          "type": "boolean"
++        },
++        "intentional_sequential_changes_declared": {
++          "type": "boolean"
++        },
++        "source_bundle_targets_valid": {
++          "type": "boolean"
++        },
++        "no_new_latches": {
++          "type": "boolean"
++        },
++        "no_new_clock_domains": {
++          "type": "boolean"
++        },
++        "notes": {
++          "type": "array",
++          "items": {
++            "type": "string"
++          }
++        }
+       }
+     }
+   },
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py
+--- latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py	2026-09-13 21:18:44.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/run_rtl_opt_groq.py	2026-09-13 22:35:50.368974062 +0000
+@@ -43,7 +43,7 @@
+ )
+ from guidance_packet import packet_from_run
+ from lint_candidate import lint_candidate
+-from optimizer_history import compact_attempt_for_model, guided_attempt_record, retry_feedback
++from optimizer_history import model_history_context, guided_attempt_record, retry_feedback
+ from prompt_renderer import render_groq_prompt
+ from run_optimizer import call_groq
+ from source_bundle import SourceBundle
+@@ -203,12 +203,53 @@
+     }
+ 
+ 
++def structural_effects_from_lint(lint: Mapping[str, Any]) -> dict[str, Any]:
++    """Summarize backend-observed structural effects without trusting model intent."""
++    checks = lint.get("checks") if isinstance(lint.get("checks"), Mapping) else {}
++    diffs = lint.get("structure_differences") if isinstance(lint.get("structure_differences"), list) else []
++    categories = {d.get("category") for d in diffs if isinstance(d, Mapping)}
++
++    def state_count(value: Any) -> int | None:
++        if not isinstance(value, Mapping):
++            return None
++        total = 0
++        seen = False
++        for cells in value.values():
++            if isinstance(cells, list):
++                total += len(cells)
++                seen = True
++        return total if seen else None
++
++    golden_count = candidate_count = None
++    for diff in diffs:
++        if not isinstance(diff, Mapping) or diff.get("category") != "elaborated_state_boundary_changed":
++            continue
++        golden_count = state_count(diff.get("golden"))
++        candidate_count = state_count(diff.get("candidate"))
++        break
++    delta = None
++    if golden_count is not None and candidate_count is not None:
++        delta = candidate_count - golden_count
++
++    effects: dict[str, Any] = {
++        "sequential_state_changed": bool(categories & {"state_boundary_changed", "elaborated_state_boundary_changed"}),
++        "new_clock_domain_detected": checks.get("no_new_clock_domains") is False,
++        "latch_introduced": checks.get("no_new_latches") is False,
++        "clock_reset_behavior_changed": checks.get("clock_reset_behavior_unchanged") is False,
++        "top_interface_changed": checks.get("top_interface_unchanged") is False,
++    }
++    if delta is not None:
++        effects["sequential_state_cell_delta"] = delta
++    return effects
++
++
+ def make_request(
+     golden_snapshot: Mapping[str, Any],
+     current_best_snapshot: Mapping[str, Any],
+     current_best_evidence: Mapping[str, Any],
+     guidance: Mapping[str, Any] | None,
+     history: list[Mapping[str, Any]],
++    search_summary: Mapping[str, Any],
+     budgets: Mapping[str, Any],
+     latency_policy: Mapping[str, Any],
+ ) -> dict[str, Any]:
+@@ -218,8 +259,8 @@
+     primary = current_bundle.source_names()[0]
+     return {
+         "schema": "optimizer_request/2",
+-        "request_semantics": "golden_current_best_latency_aware/1",
+-        "response_schema_version": "3.2",
++        "request_semantics": "golden_current_best_latency_aware/2",
++        "response_schema_version": "3.3",
+         "unit_id": "whole_design",
+         "optimizer_mode": (guidance or {}).get("mode_used", "exploratory"),
+         "guidance": guidance,
+@@ -228,6 +269,7 @@
+         "golden": prompt_snapshot(golden_snapshot, include_text=True),
+         "current_best": prompt_snapshot(current_best_snapshot, include_text=not same, same_as_golden=same),
+         "previous_attempts": [dict(item) for item in history],
++        "search_summary": dict(search_summary),
+         "editing_base_policy": {
+             "allowed": ["golden", "current_best"],
+             "selection_owner": "LLM",
+@@ -602,7 +644,9 @@
+         attempt_dir = directory / f"attempt_{attempt:02d}"
+         attempt_dir.mkdir(parents=True, exist_ok=True)
+         epoch_at_start = int(current_best["epoch"])
+-        model_history = [compact_attempt_for_model(r) for r in result["attempts"]]
++        model_history, search_summary = model_history_context(
++            result["attempts"], recent_limit=args.model_history_limit
++        )
+         active_latency_policy = latency_policy_for_prompt(
+             latency_contract,
+             current_best_total_latency_regression_cycles=int(
+@@ -611,7 +655,7 @@
+         )
+         request = make_request(
+             golden_snapshot, current_best, current_best_evidence, guidance,
+-            model_history, user_budgets(args), active_latency_policy,
++            model_history, search_summary, user_budgets(args), active_latency_policy,
+         )
+         schema = json.loads(SCHEMA.read_text())
+         try:
+@@ -742,7 +786,14 @@
+                     attempted_transformation_family=normalize_transformation_family(family),
+                     family_provenance="candidate.chosen_pattern_id",
+                 )
+-            row["optimization_class"] = payload.get("optimization_class")
++            primary_transformation = payload.get("primary_transformation")
++            proposed_transformations = list(payload.get("proposed_transformations") or [])
++            if isinstance(primary_transformation, str) and primary_transformation:
++                proposed_transformations = [primary_transformation] + [
++                    item for item in proposed_transformations if item != primary_transformation
++                ]
++            row["primary_transformation"] = primary_transformation
++            row["proposed_transformations"] = proposed_transformations
+             row["predicted_latency_change_cycles"] = payload.get("predicted_latency_change_cycles")
+             row["sequential_changes"] = payload.get("sequential_changes") or []
+ 
+@@ -810,6 +861,7 @@
+                 candidate_out_dir=attempt_dir / "candidate",
+             )
+             row["lint"] = lint
++            row["structural_effects"] = structural_effects_from_lint(lint)
+             write_json(attempt_dir / "lint.json", lint)
+             if not lint.get("ok"):
+                 row["status"] = "lint_failed"
+@@ -1147,6 +1199,8 @@
+     ap.add_argument("--max-guidance-groups", type=int, default=3)
+     ap.add_argument("--max-excerpts-per-group", type=int, default=2)
+     ap.add_argument("--max-guidance-chars", type=int, default=6000)
++    ap.add_argument("--model-history-limit", type=int, default=5,
++                    help="maximum recent meaningful attempts sent verbatim to the model; older history is aggregated")
+     ap.add_argument("--max-area-regression-pct", type=float, default=0.5)
+     ap.add_argument("--max-power-regression-pct", type=float, default=0.5)
+     ap.add_argument("--max-setup-slack-regression-ns", type=float, default=0.0)
+@@ -1163,7 +1217,7 @@
+     if args.max_meaningful_iterations is None:
+         args.max_meaningful_iterations = args.max_attempts
+     for name in ("max_attempts", "max_model_calls", "max_meaningful_iterations", "max_guidance_groups", "max_excerpts_per_group", "repetitions", "max_tokens",
+-                 "convergence_min_unique_syntheses"):
++                 "model_history_limit", "convergence_min_unique_syntheses"):
+         if getattr(args, name) < 1:
+             ap.error(name.replace("_", "-") + " must be positive")
+     if args.convergence_duplicate_limit < 0:
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/test_guided_rtl_opt.py latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/test_guided_rtl_opt.py
+--- latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/test_guided_rtl_opt.py	2026-09-13 16:15:19.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/test_guided_rtl_opt.py	2026-09-13 22:35:50.369254985 +0000
+@@ -15,7 +15,7 @@
+ 
+ from evaluate_candidate import assess_guided_candidate
+ from guidance_packet import build_packet
+-from optimizer_history import compact_attempt_for_model, guided_attempt_record, retry_feedback
++from optimizer_history import compact_attempt_for_model, model_history_context, guided_attempt_record, retry_feedback
+ from prompt_renderer import render_groq_prompt
+ from report_guided_experiment import aggregate
+ from yosys_structure import normalized_synthesis_hash
+@@ -85,6 +85,37 @@
+         self.assertEqual(payload["current_best"]["design_identity"], "cb.0")
+         self.assertEqual(payload["editing_base_policy"]["allowed"], ["golden", "current_best"])
+ 
++
++    def test_prompt_omits_duplicate_current_best_rtl_text(self):
++        req = prompt_request()
++        _system, user, _packet, _budget = render_groq_prompt(req, {"oneOf": []})
++        payload = json.loads(user)
++        self.assertTrue(payload["current_best"]["same_as_golden"])
++        self.assertNotIn("text", payload["current_best"]["source_bundle"]["sources"][0])
++        self.assertIn("text", payload["golden"]["source_bundle"]["sources"][0])
++
++    def test_model_history_is_bounded_and_aggregated(self):
++        rows = []
++        for attempt in range(1, 8):
++            rows.append({
++                "attempt": attempt,
++                "status": "analyzed",
++                "meaningful_iteration": True,
++                "meaningful_iteration_number": attempt,
++                "primary_transformation": "pipeline_insertion" if attempt == 7 else "logic_restructuring",
++                "proposed_transformations": ["pipeline_insertion"] if attempt == 7 else ["logic_restructuring"],
++                "latency_result": {"iteration_latency_delta_cycles": 1 if attempt == 7 else 0,
++                                   "verified_total_latency_regression_cycles": 1 if attempt == 7 else 0,
++                                   "status": "verified"},
++                "ppa_deltas": {"setup_slack_delta_ns": attempt / 1000.0, "area_delta_pct": -0.1},
++            })
++        recent, summary = model_history_context(rows, recent_limit=3)
++        self.assertEqual([r["attempt"] for r in recent], [5, 6, 7])
++        self.assertEqual(summary["meaningful_attempts"], 7)
++        self.assertEqual(summary["pipeline_insertion_attempts"], 1)
++        self.assertIn("logic_restructuring", summary["explored_transformations"])
++        self.assertNotIn("normalized_synthesis_hash", json.dumps(recent))
++
+     def test_compact_history_hides_raw_hash(self):
+         row = {
+             "attempt": 2,
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/tests/test_latency_verification.py latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/tests/test_latency_verification.py
+--- latency_v1_1_orig/phase5_to_9_groq_r3/timing_automation/tests/test_latency_verification.py	2026-09-13 21:58:35.000000000 +0000
++++ latency_v1_1_work/phase5_to_9_groq_r3/timing_automation/tests/test_latency_verification.py	2026-09-13 22:35:50.369203294 +0000
+@@ -160,10 +160,11 @@
+     m = _manifest(tmp_path, "module top(input clk,input [3:0] a,output reg [3:0] y); always @(posedge clk) y<=a; endmodule\n")
+     bundle = SourceBundle.from_manifest(m, tmp_path, verify_manifest_hashes=True)
+     payload = {
+-        "schema_version": "3.2",
++        "schema_version": "3.3",
+         "decision": "propose_candidate",
+         "editing_base": "current_best",
+-        "optimization_class": "pipelining",
++        "primary_transformation": "pipeline_insertion",
++        "proposed_transformations": ["pipeline_insertion"],
+         "chosen_pattern_id": "pipeline.insert_stage",
+         "target_unit_id": "whole_design",
+         "rationale": "split critical logic with an existing clock",

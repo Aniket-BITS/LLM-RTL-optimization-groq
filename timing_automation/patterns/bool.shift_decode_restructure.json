@@ -1,0 +1,39 @@
+{
+  "id": "bool.shift_decode_restructure",
+  "name": "Restructure shift-based decode logic",
+  "family": "boolean_restructuring",
+  "applies_when": {
+    "class": [
+      "boolean",
+      "decoder"
+    ],
+    "pattern_in": [
+      "shift_decode"
+    ],
+    "requires_flags": [
+      "allow_boolean_restructuring"
+    ]
+  },
+  "latency_effect": "preserves",
+  "sec_recipe": "equiv_make+equiv_induct",
+  "template": "Replace a variable shift used as a decoder with an equivalent bounded decode expression when it reduces logic depth.",
+  "example": {
+    "before": "assign y = 1'b1 << index;",
+    "after": "assign y = one_hot_decode(index);"
+  },
+  "guardrails": [
+    "Preserve output width and out-of-range shift behavior.",
+    "Do not introduce state or change latency.",
+    "Change only the source-attributed shift/decode expression."
+  ],
+  "version": "1.0.0",
+  "target_operator_roles": [
+    "$shl",
+    "$shr",
+    "$sshl",
+    "$sshr",
+    "$shift",
+    "$shiftx"
+  ],
+  "expected_equivalence_class": "combinational_same_latency"
+}

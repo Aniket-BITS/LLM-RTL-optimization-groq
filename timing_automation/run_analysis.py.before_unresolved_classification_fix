@@ -1,0 +1,1975 @@
+#!/usr/bin/env python3
+"""
+Unified pre-optimizer analysis pipeline for ORFS RTL timing closure.
+
+Fresh run:
+    python3 timing_automation/run_analysis.py \
+        --design mapper_reconvergent_test \
+        --platform nangate45
+
+Resume an existing run:
+    python3 timing_automation/run_analysis.py \
+        --design mapper_reconvergent_test \
+        --platform nangate45 \
+        --variant run_20260905_234646_9cbc56 \
+        --resume
+
+Force one stage and every downstream stage:
+    python3 timing_automation/run_analysis.py \
+        --design mapper_reconvergent_test \
+        --platform nangate45 \
+        --variant run_20260905_234646_9cbc56 \
+        --resume \
+        --force-stage mapping
+
+The component scripts remain independently runnable. This orchestrator owns:
+  * sequencing
+  * FLOW_VARIANT propagation
+  * logical timing-report discovery
+  * artifact freshness / dependency invalidation
+  * fail-fast validation
+  * pipeline execution manifest
+  * final optimizer_ready trust gate
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import traceback
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_FLOW_DIR = SCRIPT_DIR.parent
+
+STAGE_ORDER = [
+    "flow",
+    "metrics",
+    "timing",
+    "mapping",
+    "witness",
+    "classification",
+    "optimizer_input",
+]
+
+
+class PipelineError(RuntimeError):
+    def __init__(
+        self,
+        stage: str,
+        message: str,
+        *,
+        group: Optional[str] = None,
+        command: Optional[Sequence[str]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.group = group
+        self.command = list(command) if command else None
+
+
+# ---------------------------------------------------------------------------
+# Small utilities
+# ---------------------------------------------------------------------------
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def read_design_top(config: Path) -> str:
+    """
+    Resolve the actual Verilog top module from an ORFS config.mk.
+
+    ``--design`` is allowed to be an ORFS/benchmark nickname (for example
+    ``dr_ticket_machine``), while DESIGN_NAME is the module Yosys must use
+    (for example ``ticket_machine``). Legacy designs where both names are
+    identical continue to work unchanged.
+    """
+    config = Path(config).resolve()
+
+    if not config.is_file():
+        raise PipelineError(
+            "preflight",
+            f"config.mk not found while resolving RTL top: {config}",
+        )
+
+    text = config.read_text(encoding="utf-8", errors="replace")
+    match = re.search(
+        r"^\s*(?:export\s+)?DESIGN_NAME\s*(?::=|\?=|\+=|=)\s*([^\s#]+)",
+        text,
+        flags=re.MULTILINE,
+    )
+
+    if not match:
+        raise PipelineError(
+            "preflight",
+            f"DESIGN_NAME not found in {config}",
+        )
+
+    top = match.group(1).strip().strip('\"\'')
+
+    if not top or "$(" in top or "${" in top:
+        raise PipelineError(
+            "preflight",
+            f"DESIGN_NAME must resolve to a literal module name in {config}; got {top!r}",
+        )
+
+    return top
+
+
+def read_json(path: Path, stage: str) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise PipelineError(stage, f"Required JSON artifact not found: {path}")
+    except json.JSONDecodeError as exc:
+        raise PipelineError(stage, f"Malformed JSON artifact {path}: {exc}")
+    except OSError as exc:
+        raise PipelineError(stage, f"Could not read {path}: {exc}")
+
+    if not isinstance(data, dict):
+        raise PipelineError(stage, f"Expected a JSON object in {path}")
+    return data
+
+
+def write_json_atomic(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def sanitize_report_tag(report_file: Path) -> str:
+    tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", report_file.stem)
+    return tag.strip("_.-") or "report"
+
+
+def artifact_fresh(output: Path, inputs: Iterable[Path]) -> bool:
+    """Return True only when output exists and is at least as new as all inputs."""
+    if not output.exists():
+        return False
+    try:
+        out_mtime = output.stat().st_mtime_ns
+        for item in inputs:
+            if item.exists() and out_mtime < item.stat().st_mtime_ns:
+                return False
+    except OSError:
+        return False
+    return True
+
+
+def stage_index(name: Optional[str]) -> Optional[int]:
+    if name is None:
+        return None
+    return STAGE_ORDER.index(name)
+
+
+def force_applies(force_stage: Optional[str], current_stage: str) -> bool:
+    forced = stage_index(force_stage)
+    if forced is None:
+        return False
+    return STAGE_ORDER.index(current_stage) >= forced
+
+
+def command_text(command: Sequence[str]) -> str:
+    return " ".join(subprocess.list2cmdline([str(x)]) for x in command)
+
+
+def stage_banner(name: str, detail: Optional[str] = None) -> None:
+    print()
+    print("=" * 72)
+    print(name)
+    if detail:
+        print(detail)
+    print("=" * 72)
+
+
+def run_command(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    stage: str,
+    group: Optional[str] = None,
+    verbose: bool = False,
+) -> None:
+    if verbose:
+        print("Command:")
+        print("  " + " ".join(str(x) for x in command))
+        print()
+
+    try:
+        result = subprocess.run(
+            [str(x) for x in command],
+            cwd=str(cwd),
+            text=True,
+        )
+    except OSError as exc:
+        raise PipelineError(
+            stage,
+            f"Could not start command: {exc}",
+            group=group,
+            command=command,
+        )
+
+    if result.returncode != 0:
+        raise PipelineError(
+            stage,
+            f"Stage command returned exit code {result.returncode}",
+            group=group,
+            command=command,
+        )
+
+
+def ensure_context(
+    data: Dict[str, Any],
+    *,
+    design: str,
+    platform: str,
+    variant: str,
+    path: Path,
+    stage: str,
+) -> None:
+    actual_design = data.get("design")
+    actual_platform = data.get("platform")
+    actual_variant = data.get("flow_variant")
+
+    # build_optimizer_input.py nests design context under design{}.
+    if isinstance(actual_design, dict):
+        actual_platform = actual_design.get("platform")
+        actual_variant = actual_design.get("flow_variant")
+        actual_design = actual_design.get("name")
+
+    for label, actual, expected in (
+        ("design", actual_design, design),
+        ("platform", actual_platform, platform),
+        ("flow_variant", actual_variant, variant),
+    ):
+        if actual is not None and str(actual) != str(expected):
+            raise PipelineError(
+                stage,
+                f"{path.name}: {label} mismatch: expected {expected!r}, got {actual!r}",
+            )
+
+
+def _load_run_flow_provenance_helpers(
+    script_dir: Path,
+):
+    """
+    Import the provenance helpers from the same run_flow.py used by this
+    pipeline. This keeps fresh-run and resume hashing semantics identical.
+    """
+    if str(script_dir) not in sys.path:
+        sys.path.insert(
+            0,
+            str(script_dir),
+        )
+
+    try:
+        import run_flow as run_flow_module  # type: ignore
+    except Exception as exc:
+        raise PipelineError(
+            "flow",
+            (
+                "Could not import flow-input provenance "
+                f"helpers from run_flow.py: {exc}"
+            ),
+        )
+
+    required = (
+        "capture_flow_input_snapshot",
+        "compare_flow_input_snapshots",
+        "format_flow_input_mismatch",
+    )
+
+    missing = [
+        name
+        for name in required
+        if not hasattr(
+            run_flow_module,
+            name,
+        )
+    ]
+
+    if missing:
+        raise PipelineError(
+            "flow",
+            (
+                "run_flow.py does not provide the required "
+                "flow-input provenance contract: "
+                + ", ".join(
+                    missing
+                )
+                + ". Start with the updated run_flow.py."
+            ),
+        )
+
+    return run_flow_module
+
+
+def verify_current_flow_inputs(
+    *,
+    script_dir: Path,
+    run_info: Dict[str, Any],
+    design: str,
+    platform: str,
+    phase: str,
+) -> Dict[str, Any]:
+    """
+    Prove that the CURRENT source/config/constraint/report-script tree is
+    byte-identical to the tree captured before this ORFS FLOW_VARIANT ran.
+
+    Old manifests without the cryptographic snapshot are deliberately not
+    resumable: there is no trustworthy way to reconstruct historical inputs.
+    """
+    integrity = run_info.get(
+        "flow_input_integrity"
+    )
+
+    if not isinstance(
+        integrity,
+        dict,
+    ):
+        raise PipelineError(
+            "flow",
+            (
+                "This FLOW_VARIANT predates flow-input "
+                "cryptographic provenance. Resume is unsafe. "
+                "Start a fresh analysis run."
+            ),
+        )
+
+    expected = integrity.get(
+        "pre_flow"
+    )
+
+    if not isinstance(
+        expected,
+        dict,
+    ):
+        raise PipelineError(
+            "flow",
+            (
+                "Run manifest is missing the pre-flow input "
+                "snapshot. Resume is unsafe; start a fresh run."
+            ),
+        )
+
+    if integrity.get(
+        "status"
+    ) != "verified":
+        raise PipelineError(
+            "flow",
+            (
+                "The ORFS run manifest does not contain a "
+                "verified pre/post flow-input match. "
+                "Do not reuse this FLOW_VARIANT."
+            ),
+        )
+
+    module = (
+        _load_run_flow_provenance_helpers(
+            script_dir
+        )
+    )
+
+    try:
+        current = (
+            module.capture_flow_input_snapshot(
+                design,
+                platform,
+            )
+        )
+
+        differences = (
+            module.compare_flow_input_snapshots(
+                expected,
+                current,
+            )
+        )
+    except PipelineError:
+        raise
+    except Exception as exc:
+        raise PipelineError(
+            "flow",
+            (
+                "Could not verify current ORFS flow inputs "
+                f"during {phase}: {exc}"
+            ),
+        )
+
+    if not differences.get(
+        "matches"
+    ):
+        message = (
+            module.format_flow_input_mismatch(
+                differences
+            )
+        )
+
+        raise PipelineError(
+            "flow",
+            (
+                f"{message}\n\n"
+                f"Verification phase: {phase}"
+            ),
+        )
+
+    return {
+        "status": "verified",
+        "phase": phase,
+        "verified_at": utc_now(),
+        "aggregate_sha256": current.get(
+            "aggregate_sha256"
+        ),
+        "file_count": current.get(
+            "file_count"
+        ),
+    }
+
+
+
+
+# ---------------------------------------------------------------------------
+# Manifest
+# ---------------------------------------------------------------------------
+
+def new_manifest(
+    *,
+    design: str,
+    platform: str,
+    variant: Optional[str],
+    flow_dir: Path,
+    resume: bool,
+    force_stage: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "pipeline": "rtl_pre_optimizer_analysis",
+        "design": design,
+        "platform": platform,
+        "flow_variant": variant,
+        "flow_dir": str(flow_dir),
+        "started_at": utc_now(),
+        "completed_at": None,
+        "status": "running",
+        "resume": resume,
+        "force_stage": force_stage,
+        "stages": {},
+        "selected_reports": [],
+        "path_groups": [],
+        "artifacts": {},
+        "final": {},
+    }
+
+
+def mark_stage(
+    manifest: Dict[str, Any],
+    stage: str,
+    status: str,
+    **details: Any,
+) -> None:
+    item = {
+        "status": status,
+        "updated_at": utc_now(),
+    }
+    item.update(details)
+    manifest["stages"][stage] = item
+
+
+# ---------------------------------------------------------------------------
+# Preflight / discovery
+# ---------------------------------------------------------------------------
+
+def required_scripts(script_dir: Path) -> Dict[str, Path]:
+    return {
+        "run_flow": script_dir / "run_flow.py",
+        "collect_metrics": script_dir / "collect_metrics.py",
+        "parse_timing": script_dir / "parse_timing.py",
+        "build_rtl_graph": script_dir / "build_rtl_graph.py",
+        "map_to_rtl": script_dir / "map_to_rtl.py",
+        "classify_path": script_dir / "classify_path.py",
+        "build_optimizer_input": script_dir / "build_optimizer_input.py",
+        "report_checks": script_dir / "report_checks.tcl",
+        "report_witness": script_dir / "report_witness.tcl",
+        "run_stage_reports": script_dir / "run_stage_reports.py",
+    }
+
+
+def preflight(
+    flow_dir: Path,
+    script_dir: Path,
+    design: str,
+    platform: str,
+) -> Tuple[Dict[str, Path], Path]:
+    scripts = required_scripts(script_dir)
+    missing = [str(path) for path in scripts.values() if not path.exists()]
+    if missing:
+        raise PipelineError(
+            "preflight",
+            "Required pipeline files are missing:\n  " + "\n  ".join(missing),
+        )
+
+    config = flow_dir / "designs" / platform / design / "config.mk"
+    if not config.exists():
+        raise PipelineError(
+            "preflight",
+            f"Design configuration not found: {config}",
+        )
+
+    ai_runs = flow_dir / "ai_runs"
+    ai_runs.mkdir(parents=True, exist_ok=True)
+
+    # Basic syntax check of every Python stage before starting a costly flow.
+    for name, path in scripts.items():
+        if path.suffix != ".py":
+            continue
+        result = subprocess.run(
+            [sys.executable, "-m", "py_compile", str(path)],
+            cwd=str(flow_dir),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise PipelineError(
+                "preflight",
+                f"Python syntax check failed for {name} ({path}):\n{result.stderr.strip()}",
+            )
+
+    return scripts, config
+
+
+def discover_timing_reports(
+    report_dir: Path,
+    *,
+    include_witness_reports: bool = False,
+) -> List[Path]:
+    """Discover generic per-clock reports emitted by report_checks.tcl.
+
+    Witness reports live in dedicated witness subdirectories and are never
+    considered ordinary optimization path groups. ``include_witness_reports``
+    is retained only for CLI backward compatibility.
+    """
+    del include_witness_reports
+    if not report_dir.exists():
+        raise PipelineError("timing", f"ORFS report directory not found: {report_dir}")
+
+    per_group = sorted(
+        p.resolve()
+        for p in report_dir.glob("*_critical_paths.rpt")
+        if p.is_file() and not p.name.endswith("_reg2reg_critical_paths.rpt")
+    )
+    if per_group:
+        return per_group
+
+    # Backward-compatible discovery for pre-Phase-5 report directories.
+    legacy_reg2reg = report_dir / "reg2reg_critical_paths.rpt"
+    if legacy_reg2reg.exists():
+        return [legacy_reg2reg.resolve()]
+    legacy_generic = report_dir / "critical_paths.rpt"
+    if legacy_generic.exists():
+        return [legacy_generic.resolve()]
+
+    raise PipelineError(
+        "timing",
+        "No usable timing report was found. Expected <group>_critical_paths.rpt "
+        f"under {report_dir}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Artifact validators
+# ---------------------------------------------------------------------------
+
+def validate_metrics(
+    path: Path,
+    design: str,
+    platform: str,
+    variant: str,
+) -> Dict[str, Any]:
+    data = read_json(path, "metrics")
+    ensure_context(
+        data,
+        design=design,
+        platform=platform,
+        variant=variant,
+        path=path,
+        stage="metrics",
+    )
+
+    metrics = data.get("metrics")
+    if not isinstance(metrics, dict):
+        raise PipelineError("metrics", f"{path.name}: missing metrics object")
+
+    canonical_metric_keys = (
+        "wns_ns",
+        "tns_ns",
+        "area_um2",
+        "power_mw",
+    )
+    missing = [
+        key
+        for key in canonical_metric_keys
+        if metrics.get(key) is None
+    ]
+    if missing:
+        raise PipelineError(
+            "metrics",
+            f"{path.name}: missing required canonical metrics: {', '.join(missing)}",
+        )
+
+    if data.get("flow_complete") is False:
+        raise PipelineError(
+            "metrics",
+            f"{path.name}: collect_metrics marked flow_complete=false",
+        )
+    return data
+
+
+def validate_timing(
+    path: Path,
+    design: str,
+    platform: str,
+    variant: str,
+) -> Dict[str, Any]:
+    data = read_json(path, "timing")
+    ensure_context(
+        data,
+        design=design,
+        platform=platform,
+        variant=variant,
+        path=path,
+        stage="timing",
+    )
+    paths = data.get("paths")
+    if not isinstance(paths, list) or not paths:
+        raise PipelineError("timing", f"{path.name}: no timing paths were parsed")
+    for idx, item in enumerate(paths):
+        if not isinstance(item, dict):
+            raise PipelineError("timing", f"{path.name}: path {idx} is not an object")
+        for key in ("startpoint", "endpoint", "slack_ns"):
+            if item.get(key) is None:
+                raise PipelineError(
+                    "timing",
+                    f"{path.name}: path {idx} missing {key}",
+                )
+    return data
+
+
+def validate_mapping(
+    mapped_path: Path,
+    timing_path: Path,
+    design: str,
+    platform: str,
+    variant: str,
+    group: str,
+    *,
+    allow_pending_witness: bool = False,
+) -> Dict[str, Any]:
+    mapped = read_json(mapped_path, "mapping")
+    timing = read_json(timing_path, "mapping")
+    ensure_context(
+        mapped,
+        design=design,
+        platform=platform,
+        variant=variant,
+        path=mapped_path,
+        stage="mapping",
+    )
+
+    mapped_paths = mapped.get("paths")
+    timing_paths = timing.get("paths")
+    if not isinstance(mapped_paths, list) or not isinstance(timing_paths, list):
+        raise PipelineError("mapping", f"{group}: missing paths lists", group=group)
+    if len(mapped_paths) != len(timing_paths):
+        raise PipelineError(
+            "mapping",
+            f"{group}: timing path count {len(timing_paths)} != mapped path count {len(mapped_paths)}",
+            group=group,
+        )
+
+    failures: List[str] = []
+    ambiguous = 0
+    for idx, item in enumerate(mapped_paths):
+        mapping = item.get("rtl_mapping") if isinstance(item, dict) else None
+        if not isinstance(mapping, dict):
+            failures.append(f"path {idx}: missing rtl_mapping")
+            continue
+        if mapping.get("status") != "mapped":
+            failures.append(f"path {idx}: mapping status={mapping.get('status')!r}")
+        if not mapping.get("has_user_rtl_source"):
+            failures.append(f"path {idx}: no user RTL source")
+
+        # map_to_rtl schema v5 hashing is now part of the trust contract.
+        integrity = mapping.get("source_integrity")
+        if not isinstance(integrity, dict) or integrity.get("status") != "complete":
+            failures.append(f"path {idx}: mapping-time source SHA-256 provenance incomplete")
+
+        if mapping.get("remaining_logical_reconvergence"):
+            narrowing = mapping.get("physical_narrowing") or {}
+            if not (isinstance(narrowing, dict) and narrowing.get("resolved") is True):
+                ambiguous += 1
+
+    if failures:
+        preview = "\n  ".join(failures[:10])
+        extra = "" if len(failures) <= 10 else f"\n  ... {len(failures)-10} more"
+        raise PipelineError(
+            "mapping",
+            f"{group}: mapping validation failed:\n  {preview}{extra}",
+            group=group,
+        )
+
+    if ambiguous and not allow_pending_witness:
+        raise PipelineError(
+            "mapping",
+            f"{group}: {ambiguous} path(s) still require physical witness narrowing. "
+            "The two-pass witness stage did not resolve them; classification is blocked.",
+            group=group,
+        )
+
+    return mapped
+
+
+def validate_classification(
+    classified_path: Path,
+    mapped_path: Path,
+    design: str,
+    platform: str,
+    variant: str,
+    group: str,
+) -> Dict[str, Any]:
+    classified = read_json(classified_path, "classification")
+    mapped = read_json(mapped_path, "classification")
+    ensure_context(
+        classified,
+        design=design,
+        platform=platform,
+        variant=variant,
+        path=classified_path,
+        stage="classification",
+    )
+
+    cp = classified.get("paths")
+    mp = mapped.get("paths")
+    if not isinstance(cp, list) or not isinstance(mp, list):
+        raise PipelineError("classification", f"{group}: missing paths lists", group=group)
+    if len(cp) != len(mp):
+        raise PipelineError(
+            "classification",
+            f"{group}: mapped path count {len(mp)} != classified path count {len(cp)}",
+            group=group,
+        )
+
+    failures: List[str] = []
+    for idx, item in enumerate(cp):
+        cls = item.get("classification") if isinstance(item, dict) else None
+        if not isinstance(cls, dict):
+            failures.append(f"path {idx}: missing classification")
+            continue
+        if cls.get("status") != "classified":
+            failures.append(f"path {idx}: classification status={cls.get('status')!r}")
+        if not cls.get("structural_class"):
+            failures.append(f"path {idx}: missing structural_class")
+        if not cls.get("structural_pattern"):
+            failures.append(f"path {idx}: missing structural_pattern")
+
+    if failures:
+        preview = "\n  ".join(failures[:10])
+        extra = "" if len(failures) <= 10 else f"\n  ... {len(failures)-10} more"
+        raise PipelineError(
+            "classification",
+            f"{group}: classification validation failed:\n  {preview}{extra}",
+            group=group,
+        )
+    return classified
+
+
+def validate_optimizer_input(
+    path: Path,
+    design: str,
+    platform: str,
+    variant: str,
+) -> Dict[str, Any]:
+    data = read_json(path, "optimizer_input")
+    ensure_context(
+        data,
+        design=design,
+        platform=platform,
+        variant=variant,
+        path=path,
+        stage="optimizer_input",
+    )
+
+    validation = data.get("validation")
+    if not isinstance(validation, dict):
+        raise PipelineError("optimizer_input", f"{path.name}: missing validation object")
+
+    if validation.get("optimizer_ready") is not True:
+        errors = validation.get("fatal_errors") or []
+        message = "Builder completed but optimizer_ready is false"
+        if errors:
+            message += ":\n  " + "\n  ".join(str(x) for x in errors)
+        raise PipelineError("optimizer_input", message)
+
+    units = data.get("optimization_units")
+    if not isinstance(units, list) or not units:
+        raise PipelineError(
+            "optimizer_input",
+            f"{path.name}: optimizer_ready=true but no optimization_units exist",
+        )
+    if not any(
+        isinstance(u, dict)
+        and isinstance(u.get("eligibility"), dict)
+        and u["eligibility"].get("optimization_ready") is True
+        for u in units
+    ):
+        raise PipelineError(
+            "optimizer_input",
+            f"{path.name}: no optimization-ready unit exists",
+        )
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Stages
+# ---------------------------------------------------------------------------
+
+def run_fresh_flow(
+    script_dir: Path,
+    design: str,
+    platform: str,
+    prefix: str,
+) -> Dict[str, Any]:
+    """Import run_flow.py so the generated variant is returned without stdout parsing."""
+    sys.path.insert(0, str(script_dir))
+    try:
+        from run_flow import run_flow  # type: ignore
+    except Exception as exc:
+        raise PipelineError("flow", f"Could not import run_flow.py: {exc}")
+
+    try:
+        info = run_flow(
+            design=design,
+            platform=platform,
+            prefix=prefix,
+        )
+    except Exception as exc:
+        raise PipelineError("flow", str(exc))
+
+    if not isinstance(info, dict) or not info.get("flow_variant"):
+        raise PipelineError("flow", "run_flow.py did not return a valid run manifest")
+    return info
+
+
+def load_resume_run(
+    ai_runs: Path,
+    design: str,
+    platform: str,
+    variant: str,
+) -> Dict[str, Any]:
+    manifest_path = ai_runs / f"{variant}.json"
+    info = read_json(manifest_path, "flow")
+    ensure_context(
+        info,
+        design=design,
+        platform=platform,
+        variant=variant,
+        path=manifest_path,
+        stage="flow",
+    )
+    for key in ("report_dir", "result_dir", "log_dir", "object_dir"):
+        if not info.get(key):
+            raise PipelineError("flow", f"Run manifest missing {key}: {manifest_path}")
+    return info
+
+
+def timing_output_for(ai_runs: Path, variant: str, report: Path) -> Tuple[str, Path]:
+    tag = sanitize_report_tag(report)
+    return tag, ai_runs / f"{variant}_{tag}_timing_paths.json"
+
+
+def mapped_output_for(ai_runs: Path, variant: str, group: str) -> Path:
+    return ai_runs / f"{variant}_{group}_rtl_mapped.json"
+
+
+def classified_output_for(ai_runs: Path, variant: str, group: str) -> Path:
+    return ai_runs / f"{variant}_{group}_classified.json"
+
+
+def existing_artifact_groups(ai_runs: Path, variant: str, suffix: str) -> set[str]:
+    prefix = variant + "_"
+    groups: set[str] = set()
+    for path in ai_runs.glob(f"{variant}_*{suffix}"):
+        name = path.name
+        if not name.startswith(prefix) or not name.endswith(suffix):
+            continue
+        middle = name[len(prefix): -len(suffix)]
+        if middle:
+            groups.add(middle)
+    return groups
+
+
+def assert_no_unselected_group_artifacts(
+    ai_runs: Path,
+    variant: str,
+    selected_groups: Sequence[str],
+) -> None:
+    selected = set(selected_groups)
+    existing = set()
+    for suffix in (
+        "_timing_paths.json",
+        "_rtl_mapped.json",
+        "_classified.json",
+    ):
+        existing |= existing_artifact_groups(ai_runs, variant, suffix)
+
+    extras = sorted(existing - selected)
+    if extras:
+        raise PipelineError(
+            "optimizer_input",
+            "Found variant-scoped path-group artifacts that are not part of "
+            "this pipeline run: " + ", ".join(extras) + ". "
+            "Refusing to let build_optimizer_input.py silently ingest stale or "
+            "diagnostic groups. Move/delete those extra *_timing_paths.json / "
+            "*_rtl_mapped.json / *_classified.json files for this variant, or "
+            "explicitly include the corresponding reports in the analysis policy.",
+        )
+
+
+def packet_has_cryptographic_source_integrity(packet: Dict[str, Any]) -> bool:
+    paths = packet.get("critical_paths")
+    if not isinstance(paths, list) or not paths:
+        return False
+    seen = False
+    for path in paths:
+        if not isinstance(path, dict):
+            return False
+        mapping = path.get("rtl_mapping") or {}
+        locations = mapping.get("source_locations") or []
+        if not locations:
+            return False
+        for loc in locations:
+            integrity = (loc or {}).get("integrity") or {}
+            seen = True
+            if integrity.get("freshness_assurance") != "cryptographic":
+                return False
+            if integrity.get("upstream_hash_matches_current_source") is not True:
+                return False
+    return seen
+
+
+# ---------------------------------------------------------------------------
+# Final summary
+# ---------------------------------------------------------------------------
+
+def print_success_summary(packet: Dict[str, Any], manifest_path: Path) -> None:
+    design = packet.get("design", {})
+    baseline = packet.get("baseline_metrics", {})
+    coverage = packet.get("coverage", {})
+    regions = packet.get("optimization_regions", [])
+    units = packet.get("optimization_units", [])
+    constraints = packet.get("constraints", {})
+
+    clocks = constraints.get("clocks") if isinstance(constraints, dict) else []
+    clock_name = None
+    clock_period = None
+    if isinstance(clocks, list) and clocks:
+        clock = clocks[0] if isinstance(clocks[0], dict) else {}
+        clock_name = clock.get("name")
+        clock_period = clock.get("period_ns")
+
+    print()
+    print("=" * 72)
+    print("RTL ANALYSIS PIPELINE COMPLETE")
+    print("=" * 72)
+    print(f"Design        : {design.get('name')}")
+    print(f"Platform      : {design.get('platform')}")
+    print(f"Flow Variant  : {design.get('flow_variant')}")
+    print()
+    print("Baseline")
+    print("-" * 72)
+    if clock_name is not None:
+        print(f"Clock         : {clock_name}")
+    if clock_period is not None:
+        print(f"Period        : {clock_period} ns")
+    print(f"WNS           : {baseline.get('wns_ns')} ns")
+    print(f"TNS           : {baseline.get('tns_ns')} ns")
+    print(f"Area          : {baseline.get('area_um2')} um^2")
+    print(f"Power         : {baseline.get('power_mw')} mW")
+    print()
+    print("Coverage")
+    print("-" * 72)
+    print(f"Timing groups : {coverage.get('timing_path_groups_discovered')}")
+    print(f"Timing paths  : {coverage.get('timing_paths_total')}")
+    print(f"Mapped        : {coverage.get('mapped_paths_total')} / {coverage.get('timing_paths_total')}")
+    print(f"Classified    : {coverage.get('classified_paths_total')} / {coverage.get('timing_paths_total')}")
+    print()
+    print("Optimization")
+    print("-" * 72)
+    print(f"Diagnostic regions : {len(regions) if isinstance(regions, list) else 0}")
+    print(f"Optimization units : {len(units) if isinstance(units, list) else 0}")
+    if isinstance(units, list):
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            timing = unit.get("timing_summary") or {}
+            structural = unit.get("structural_summary") or {}
+            ready = (unit.get("eligibility") or {}).get("optimization_ready")
+            print(
+                f"{unit.get('unit_id')}: paths={timing.get('path_count')} | "
+                f"worst_slack={timing.get('worst_slack_ns')} | ready={ready}"
+            )
+            patterns = structural.get("patterns") or []
+            for pattern in patterns:
+                print(f"    - {pattern}")
+    print()
+    print("Integrity")
+    print("-" * 72)
+    checks = (packet.get("validation") or {}).get("checks") or {}
+    print("ORFS flow-input hash : PASS")
+    print(f"Source mapping       : {'PASS' if checks.get('source_resolved') else 'FAIL'}")
+    print(f"Mapping-time SHA-256 : {'PASS' if packet_has_cryptographic_source_integrity(packet) else 'FAIL'}")
+    print(f"Source/operator map  : {'PASS' if checks.get('source_operator_coverage_complete') else 'FAIL'}")
+    print(f"Operator consistency : {'PASS' if checks.get('operator_consistency') else 'FAIL'}")
+    print(f"Timing consistency   : {'PASS' if checks.get('global_wns_consistency') else 'FAIL'}")
+    print(f"Clock constraints     : {'PASS' if checks.get('clock_constraints_complete') else 'FAIL'}")
+    print()
+    print("=" * 72)
+    print("OPTIMIZER READY : YES")
+    print(f"Pipeline manifest: {manifest_path}")
+    print("=" * 72)
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Run the complete trusted pre-optimizer RTL timing analysis pipeline."
+    )
+    p.add_argument("--design", required=True)
+    p.add_argument("--platform", default="nangate45")
+    p.add_argument("--flow-dir", type=Path, default=DEFAULT_FLOW_DIR)
+    p.add_argument("--prefix", default="run", help="Fresh FLOW_VARIANT prefix")
+    p.add_argument("--variant", default=None, help="Existing FLOW_VARIANT for --resume")
+    p.add_argument(
+        "--liberty",
+        action="append",
+        default=[],
+        help=(
+            "Exact Liberty file for physical-stage replay. "
+            "May be specified multiple times."
+        ),
+    )
+    p.add_argument("--resume", action="store_true", help="Reuse a prior ORFS run and fresh valid artifacts")
+    p.add_argument(
+        "--force-stage",
+        choices=("metrics", "timing", "mapping", "witness", "classification", "optimizer_input"),
+        default=None,
+        help="Regenerate this stage and every downstream stage during --resume",
+    )
+    p.add_argument(
+        "--include-witness-reports",
+        action="store_true",
+        help="Deprecated compatibility flag; witness reports are now isolated in the two-pass witness stage.",
+    )
+    p.add_argument(
+        "--context-lines",
+        type=int,
+        default=12,
+        help="Pass through to build_optimizer_input.py",
+    )
+    p.add_argument(
+        "--minimum-confidence",
+        choices=("low", "medium", "high"),
+        default="high",
+        help="Minimum classification confidence for final optimizer readiness",
+    )
+    p.add_argument(
+        "--wns-tolerance-ns",
+        type=float,
+        default=0.005,
+        help="Global WNS vs observed-worst-path tolerance for final builder",
+    )
+    p.add_argument("--allow-latency-change", action="store_true")
+    p.add_argument("--allow-pipeline", action="store_true")
+    p.add_argument("--allow-retiming", action="store_true")
+    p.add_argument("--verbose", action="store_true")
+    return p.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    flow_dir = args.flow_dir.resolve()
+    script_dir = Path(__file__).resolve().parent
+    ai_runs = flow_dir / "ai_runs"
+
+    if args.resume and not args.variant:
+        print("ERROR: --resume requires --variant", file=sys.stderr)
+        return 2
+    if args.variant and not args.resume:
+        print("ERROR: --variant is only valid with --resume", file=sys.stderr)
+        return 2
+    if args.force_stage and not args.resume:
+        print("ERROR: --force-stage requires --resume", file=sys.stderr)
+        return 2
+    if args.allow_pipeline and not args.allow_latency_change:
+        print("ERROR: --allow-pipeline requires --allow-latency-change", file=sys.stderr)
+        return 2
+
+    manifest = new_manifest(
+        design=args.design,
+        platform=args.platform,
+        variant=args.variant,
+        flow_dir=flow_dir,
+        resume=args.resume,
+        force_stage=args.force_stage,
+    )
+    manifest_path: Optional[Path] = None
+
+    try:
+        stage_banner("PREFLIGHT")
+        scripts, config = preflight(
+            flow_dir,
+            script_dir,
+            args.design,
+            args.platform,
+        )
+        rtl_top = read_design_top(config)
+        manifest["rtl_top"] = rtl_top
+
+        mark_stage(
+            manifest,
+            "preflight",
+            "passed",
+            config=str(config),
+            rtl_top=rtl_top,
+            scripts={k: str(v) for k, v in scripts.items()},
+        )
+        print("PASS: scripts, config, report_checks.tcl, and Python syntax")
+        print(f"Design ID : {args.design}")
+        print(f"RTL top   : {rtl_top}")
+
+        # ---------------------------------------------------------------
+        # FLOW
+        # ---------------------------------------------------------------
+        stage_banner("FLOW", "ORFS baseline")
+        if args.resume:
+            assert args.variant is not None
+
+            run_info = load_resume_run(
+                ai_runs,
+                args.design,
+                args.platform,
+                args.variant,
+            )
+
+            variant = args.variant
+
+            flow_integrity = (
+                verify_current_flow_inputs(
+                    script_dir=script_dir,
+                    run_info=run_info,
+                    design=args.design,
+                    platform=args.platform,
+                    phase="resume_start",
+                )
+            )
+
+            mark_stage(
+                manifest,
+                "flow",
+                "reused",
+                run_manifest=str(
+                    ai_runs
+                    / f"{variant}.json"
+                ),
+                flow_input_integrity=flow_integrity,
+            )
+
+            print(
+                f"REUSE: {variant}"
+            )
+
+            print(
+                "Flow inputs : VERIFIED "
+                f"({flow_integrity['file_count']} files)"
+            )
+
+            print(
+                "Input SHA   : "
+                f"{flow_integrity['aggregate_sha256']}"
+            )
+
+        else:
+            run_info = run_fresh_flow(
+                script_dir,
+                args.design,
+                args.platform,
+                args.prefix,
+            )
+
+            variant = str(
+                run_info[
+                    "flow_variant"
+                ]
+            )
+
+            # run_flow.py already compares the pre/post ORFS snapshots.
+            # Verify once more against the current bytes before downstream
+            # analysis starts, closing the gap after run_flow() returns.
+            flow_integrity = (
+                verify_current_flow_inputs(
+                    script_dir=script_dir,
+                    run_info=run_info,
+                    design=args.design,
+                    platform=args.platform,
+                    phase="post_flow_before_analysis",
+                )
+            )
+
+            mark_stage(
+                manifest,
+                "flow",
+                "passed",
+                run_manifest=str(
+                    ai_runs
+                    / f"{variant}.json"
+                ),
+                flow_input_integrity=flow_integrity,
+            )
+
+        manifest["flow_variant"] = variant
+        manifest_path = ai_runs / f"{variant}_pipeline.json"
+        write_json_atomic(manifest_path, manifest)
+
+        run_manifest_path = ai_runs / f"{variant}.json"
+        report_dir = Path(run_info["report_dir"]).resolve()
+
+        # ---------------------------------------------------------------
+        # METRICS
+        # ---------------------------------------------------------------
+        stage_banner("METRICS", "Canonical WNS / TNS / area / power")
+        metrics_path = ai_runs / f"{variant}_metrics.json"
+        rerun_metrics = (
+            not args.resume
+            or force_applies(args.force_stage, "metrics")
+            or not artifact_fresh(metrics_path, [scripts["collect_metrics"], run_manifest_path])
+        )
+        if rerun_metrics:
+            command = [
+                sys.executable,
+                str(scripts["collect_metrics"]),
+                "--variant", variant,
+                "--design", args.design,
+                "--platform", args.platform,
+                "--flow-dir", str(flow_dir),
+                "--output", str(metrics_path),
+            ]
+            run_command(command, cwd=flow_dir, stage="metrics", verbose=args.verbose)
+            status = "passed"
+        else:
+            print(f"REUSE: {metrics_path.name}")
+            status = "reused"
+        metrics_data = validate_metrics(metrics_path, args.design, args.platform, variant)
+        mark_stage(
+            manifest,
+            "metrics",
+            status,
+            output=str(metrics_path),
+            metrics=metrics_data.get("metrics"),
+        )
+        manifest["artifacts"]["metrics"] = str(metrics_path)
+        write_json_atomic(manifest_path, manifest)
+
+        # ---------------------------------------------------------------
+        # TIMING
+        # ---------------------------------------------------------------
+        stage_banner("TIMING", "Stage-consistent report_checks.rpt -> structured path JSON")
+
+        # ---------------------------------------------------------------
+        # Physical-stage-consistent timing reports
+        #
+        # Canonical PPA metrics and timing paths must come from the same
+        # physical stage.  Final-stage reports live directly under:
+        #
+        #     reports/<platform>/<design>/<variant>/
+        #
+        # Earlier physical stages are explicitly materialized by
+        # run_stage_reports.py under:
+        #
+        #     reports/<platform>/<design>/<variant>/stages/<stage>/
+        #
+        # Never silently fall back from a requested non-final stage to the
+        # final reports: doing so can pair e.g. global-route PPA with final
+        # timing paths and invalidate optimizer input.
+        # ---------------------------------------------------------------
+
+        timing_stage = "final"
+
+        evaluation = metrics_data.get("evaluation")
+        if isinstance(evaluation, dict):
+            raw_stage = evaluation.get("stage")
+            if isinstance(raw_stage, str) and raw_stage.strip():
+                timing_stage = raw_stage.strip()
+
+        if timing_stage == "final":
+            timing_report_dir = report_dir
+            stage_report_metadata = None
+        else:
+            timing_report_dir = (
+                report_dir
+                / "stages"
+                / timing_stage
+            )
+
+            stage_report_metadata = (
+                ai_runs
+                / f"{variant}_{timing_stage}_stage_reports.json"
+            )
+
+            if not timing_report_dir.is_dir():
+                raise PipelineError(
+                    "Metrics request physical stage "
+                    f"{timing_stage!r}, but the matching timing-report "
+                    f"directory does not exist: {timing_report_dir}. "
+                    "Generate it with run_stage_reports.py before "
+                    "running timing analysis."
+                )
+
+            if not stage_report_metadata.is_file():
+                raise PipelineError(
+                    "Stage timing-report metadata is missing: "
+                    f"{stage_report_metadata}"
+                )
+
+            try:
+                stage_report_data = json.loads(
+                    stage_report_metadata.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                raise PipelineError(
+                    "Could not read stage timing-report metadata "
+                    f"{stage_report_metadata}: {exc}"
+                ) from exc
+
+            if stage_report_data.get("ok") is not True:
+                raise PipelineError(
+                    "Stage timing-report metadata is not marked valid: "
+                    f"{stage_report_metadata}"
+                )
+
+            metadata_stage = (
+                stage_report_data.get("evaluation", {}).get("stage")
+                if isinstance(
+                    stage_report_data.get("evaluation"),
+                    dict,
+                )
+                else None
+            )
+
+            if metadata_stage != timing_stage:
+                raise PipelineError(
+                    "Stage timing-report metadata mismatch: "
+                    f"metrics stage={timing_stage!r}, "
+                    f"report stage={metadata_stage!r}"
+                )
+
+        manifest["timing_report_stage"] = timing_stage
+        manifest["timing_report_dir"] = str(timing_report_dir)
+
+        if stage_report_metadata is not None:
+            manifest["artifacts"]["stage_reports"] = str(
+                stage_report_metadata
+            )
+
+        print(f"Timing stage : {timing_stage}")
+        print(f"Report dir   : {timing_report_dir}")
+
+        reports = discover_timing_reports(
+            timing_report_dir,
+            include_witness_reports=args.include_witness_reports,
+        )
+
+        manifest["selected_reports"] = [str(p) for p in reports]
+
+        print("Selected reports:")
+        for report in reports:
+            print(f"  - {report.name}")
+
+        timing_artifacts: Dict[str, Path] = {}
+        timing_counts: Dict[str, int] = {}
+        timing_reran = False
+        for report in reports:
+            group, output = timing_output_for(ai_runs, variant, report)
+            timing_artifacts[group] = output
+            needs_run = (
+                not args.resume
+                or force_applies(args.force_stage, "timing")
+                or not artifact_fresh(output, [report, scripts["parse_timing"]])
+            )
+            if needs_run:
+                timing_reran = True
+                print(f"\nParsing group: {group}")
+                command = [
+                    sys.executable,
+                    str(scripts["parse_timing"]),
+                    "--variant", variant,
+                    "--design", args.design,
+                    "--platform", args.platform,
+                    "--flow-dir", str(flow_dir),
+                    "--report", str(report),
+                    "--output", str(output),
+                ]
+                run_command(
+                    command,
+                    cwd=flow_dir,
+                    stage="timing",
+                    group=group,
+                    verbose=args.verbose,
+                )
+            else:
+                print(f"REUSE {group}: {output.name}")
+
+            data = validate_timing(output, args.design, args.platform, variant)
+            timing_counts[group] = len(data["paths"])
+
+        groups = sorted(timing_artifacts)
+        manifest["path_groups"] = groups
+        mark_stage(
+            manifest,
+            "timing",
+            "passed" if timing_reran else "reused",
+            groups=groups,
+            path_counts=timing_counts,
+            total_paths=sum(timing_counts.values()),
+        )
+        manifest["artifacts"]["timing"] = {
+            g: str(p) for g, p in timing_artifacts.items()
+        }
+        write_json_atomic(manifest_path, manifest)
+
+        # ---------------------------------------------------------------
+        # MAPPING
+        # ---------------------------------------------------------------
+
+        # Do not let a source/config/SDC edit made after the ORFS stage get
+        # paired with an old checkpoint/physical timing run.
+        flow_integrity_before_mapping = (
+            verify_current_flow_inputs(
+                script_dir=script_dir,
+                run_info=run_info,
+                design=args.design,
+                platform=args.platform,
+                phase="before_mapping",
+            )
+        )
+
+        manifest[
+            "stages"
+        ][
+            "flow"
+        ][
+            "flow_input_integrity_before_mapping"
+        ] = flow_integrity_before_mapping
+
+        write_json_atomic(
+            manifest_path,
+            manifest,
+        )
+
+        stage_banner("RTL MAPPING", "Bit-precise pre-ABC cone + mapping-time SHA-256")
+        mapped_artifacts: Dict[str, Path] = {}
+        mapped_counts: Dict[str, int] = {}
+        mapping_reran = False
+        rtl_graph_path = ai_runs / f"{variant}_rtl_graph.json"
+
+        for group in groups:
+            timing_path = timing_artifacts[group]
+            mapped_path = mapped_output_for(ai_runs, variant, group)
+            mapped_artifacts[group] = mapped_path
+            needs_run = (
+                not args.resume
+                or timing_reran
+                or force_applies(args.force_stage, "mapping")
+                or not artifact_fresh(
+                    mapped_path,
+                    [timing_path, scripts["map_to_rtl"], scripts["build_rtl_graph"]],
+                )
+            )
+            if needs_run:
+                mapping_reran = True
+                print(f"\nMapping group: {group}")
+                command = [
+                    sys.executable,
+                    str(scripts["map_to_rtl"]),
+                    "--variant", variant,
+                    "--design", args.design,
+                    "--top", rtl_top,
+                    "--platform", args.platform,
+                    "--flow-dir", str(flow_dir),
+                    "--timing-json", str(timing_path),
+                    "--rtl-graph", str(rtl_graph_path),
+                    "--output", str(mapped_path),
+                ]
+                run_command(
+                    command,
+                    cwd=flow_dir,
+                    stage="mapping",
+                    group=group,
+                    verbose=args.verbose,
+                )
+            else:
+                print(f"REUSE {group}: {mapped_path.name}")
+
+            mapped = validate_mapping(
+                mapped_path,
+                timing_path,
+                args.design,
+                args.platform,
+                variant,
+                group,
+                allow_pending_witness=True,
+            )
+            mapped_counts[group] = len(mapped["paths"])
+
+        if not rtl_graph_path.exists():
+            raise PipelineError("mapping", f"RTL graph was not produced: {rtl_graph_path}")
+
+        mark_stage(
+            manifest,
+            "mapping",
+            "passed" if mapping_reran else "reused",
+            groups=groups,
+            mapped_counts=mapped_counts,
+            total_mapped=sum(mapped_counts.values()),
+            rtl_graph=str(rtl_graph_path),
+        )
+        manifest["artifacts"]["rtl_graph"] = str(rtl_graph_path)
+        manifest["artifacts"]["mapped"] = {
+            g: str(p) for g, p in mapped_artifacts.items()
+        }
+        write_json_atomic(manifest_path, manifest)
+
+        # ---------------------------------------------------------------
+        # WITNESS — conditional second pass for genuine reconvergence
+        # ---------------------------------------------------------------
+        stage_banner("WITNESS", "Dynamic branch witnesses -> physical mux-input narrowing")
+        witness_total_pending = 0
+        witness_groups: Dict[str, Dict[str, Any]] = {}
+        for group in groups:
+            mapped_doc = read_json(mapped_artifacts[group], "witness")
+            pending = int(mapped_doc.get("witness_requests_pending") or 0)
+            if pending > 0:
+                request_raw = mapped_doc.get("witness_request")
+                request_path = Path(request_raw).resolve() if isinstance(request_raw, str) else mapped_artifacts[group].with_name(
+                    mapped_artifacts[group].name.replace("_rtl_mapped.json", "_witness_request.json")
+                )
+                witness_groups[group] = {"pending": pending, "request": request_path}
+                witness_total_pending += pending
+
+        witness_reran = False
+        witness_artifacts: Dict[str, Any] = {}
+        if witness_total_pending == 0:
+            mark_stage(manifest, "witness", "skipped", reason="no_ambiguity", requests_pending=0)
+            print("SKIP: no witness requests were emitted by mapping")
+        else:
+            for group, info in witness_groups.items():
+                witness_reran = True
+                request_path = Path(info["request"])
+                if not request_path.is_file():
+                    raise PipelineError("witness", f"{group}: witness request not found: {request_path}", group=group)
+                witness_subdir = "witness_" + sanitize_report_tag(Path(group + ".rpt"))
+                command = [
+                    sys.executable,
+                    str(scripts["run_stage_reports"]),
+                    "--variant", variant,
+                    "--design", args.design,
+                    "--platform", args.platform,
+                    "--stage", timing_stage,
+                    "--flow-dir", str(flow_dir),
+                    "--tcl-script", str(scripts["report_witness"]),
+                    "--report-subdir", witness_subdir,
+                    "--env", f"NEBULA_WITNESS_REQUEST={request_path}",
+                    "--overwrite",
+                ]
+                if args.liberty:
+                    for lib in args.liberty:
+                        command.extend([
+                            "--liberty",
+                            str(Path(lib).expanduser().resolve()),
+                        ])
+                elif stage_report_metadata is not None:
+                    stage_meta = read_json(stage_report_metadata, "witness")
+                    for lib in ((stage_meta.get("source") or {}).get("liberty_files") or []):
+                        if isinstance(lib, dict) and isinstance(lib.get("path"), str):
+                            command.extend(["--liberty", lib["path"]])
+                run_command(command, cwd=flow_dir, stage="witness", group=group, verbose=args.verbose)
+
+                witness_dir = (
+                    flow_dir / "reports" / args.platform / args.design / variant /
+                    "stages" / timing_stage / witness_subdir
+                ).resolve()
+                # Keep the request beside its dynamically generated results so
+                # narrow_reconvergence.py --witness-dir is self-contained.
+                request_copy = witness_dir / request_path.name
+                if request_copy.resolve() != request_path.resolve():
+                    request_copy.write_bytes(request_path.read_bytes())
+                status_files = sorted(witness_dir.glob("witness_*.json"))
+                for status_file in status_files:
+                    status = read_json(status_file, "witness")
+                    witness_id = status.get("witness_id")
+                    if not isinstance(witness_id, str) or not witness_id:
+                        continue
+                    if status.get("resolved") is not True:
+                        continue
+                    report_path = witness_dir / f"witness_{witness_id}.rpt"
+                    if not report_path.is_file():
+                        raise PipelineError("witness", f"{group}: resolved witness has no report: {report_path}", group=group)
+                    parsed_path = witness_dir / f"witness_{witness_id}_timing.json"
+                    parse_command = [
+                        sys.executable,
+                        str(scripts["parse_timing"]),
+                        "--variant", variant,
+                        "--design", args.design,
+                        "--platform", args.platform,
+                        "--flow-dir", str(flow_dir),
+                        "--report", str(report_path),
+                        "--output", str(parsed_path),
+                    ]
+                    run_command(parse_command, cwd=flow_dir, stage="witness", group=group, verbose=args.verbose)
+
+                # Re-run the mapper against exactly the same timing paths and RTL graph,
+                # now with physical witness timing available.
+                remap_command = [
+                    sys.executable,
+                    str(scripts["map_to_rtl"]),
+                    "--variant", variant,
+                    "--design", args.design,
+                    "--top", rtl_top,
+                    "--platform", args.platform,
+                    "--flow-dir", str(flow_dir),
+                    "--timing-json", str(timing_artifacts[group]),
+                    "--rtl-graph", str(rtl_graph_path),
+                    "--witness-dir", str(witness_dir),
+                    "--output", str(mapped_artifacts[group]),
+                ]
+                run_command(remap_command, cwd=flow_dir, stage="witness", group=group, verbose=args.verbose)
+                remapped = validate_mapping(
+                    mapped_artifacts[group], timing_artifacts[group], args.design,
+                    args.platform, variant, group, allow_pending_witness=False,
+                )
+                resolved_count = int(remapped.get("witness_resolved_path_count") or 0)
+                witness_artifacts[group] = {
+                    "request": str(request_path),
+                    "directory": str(witness_dir),
+                    "resolved_paths": resolved_count,
+                }
+
+            mark_stage(
+                manifest,
+                "witness",
+                "passed",
+                requests_pending=witness_total_pending,
+                groups=witness_artifacts,
+            )
+            manifest["artifacts"]["witness"] = witness_artifacts
+
+        write_json_atomic(manifest_path, manifest)
+
+        # ---------------------------------------------------------------
+        # CLASSIFICATION
+        # ---------------------------------------------------------------
+        stage_banner("CLASSIFICATION", "Resolved RTL structure -> bottleneck class/pattern")
+        classified_artifacts: Dict[str, Path] = {}
+        classified_counts: Dict[str, int] = {}
+        classification_reran = False
+
+        for group in groups:
+            mapped_path = mapped_artifacts[group]
+            classified_path = classified_output_for(ai_runs, variant, group)
+            classified_artifacts[group] = classified_path
+            needs_run = (
+                not args.resume
+                or mapping_reran
+                or witness_reran
+                or force_applies(args.force_stage, "classification")
+                or not artifact_fresh(
+                    classified_path,
+                    [mapped_path, scripts["classify_path"]],
+                )
+            )
+            if needs_run:
+                classification_reran = True
+                print(f"\nClassifying group: {group}")
+                command = [
+                    sys.executable,
+                    str(scripts["classify_path"]),
+                    "--mapped-json", str(mapped_path),
+                    "--flow-dir", str(flow_dir),
+                    "--output", str(classified_path),
+                ]
+                run_command(
+                    command,
+                    cwd=flow_dir,
+                    stage="classification",
+                    group=group,
+                    verbose=args.verbose,
+                )
+            else:
+                print(f"REUSE {group}: {classified_path.name}")
+
+            classified = validate_classification(
+                classified_path,
+                mapped_path,
+                args.design,
+                args.platform,
+                variant,
+                group,
+            )
+            classified_counts[group] = len(classified["paths"])
+
+        mark_stage(
+            manifest,
+            "classification",
+            "passed" if classification_reran else "reused",
+            groups=groups,
+            classified_counts=classified_counts,
+            total_classified=sum(classified_counts.values()),
+        )
+        manifest["artifacts"]["classified"] = {
+            g: str(p) for g, p in classified_artifacts.items()
+        }
+        write_json_atomic(manifest_path, manifest)
+
+        # ---------------------------------------------------------------
+        # FINAL TRUST BOUNDARY
+        # ---------------------------------------------------------------
+
+        # Re-check after mapping/classification. If RTL/config/SDC/report
+        # inputs changed while Python analysis was running, fail instead of
+        # producing a mixed-provenance optimizer packet.
+        flow_integrity_before_builder = (
+            verify_current_flow_inputs(
+                script_dir=script_dir,
+                run_info=run_info,
+                design=args.design,
+                platform=args.platform,
+                phase="before_optimizer_input",
+            )
+        )
+
+        manifest[
+            "stages"
+        ][
+            "flow"
+        ][
+            "flow_input_integrity_before_optimizer_input"
+        ] = flow_integrity_before_builder
+
+        write_json_atomic(
+            manifest_path,
+            manifest,
+        )
+
+        stage_banner("OPTIMIZER INPUT", "Final trust boundary")
+
+        # build_optimizer_input.py intentionally discovers all variant-scoped
+        # artifacts. Protect that trust boundary from stale/manual groups.
+        assert_no_unselected_group_artifacts(
+            ai_runs,
+            variant,
+            groups,
+        )
+
+        optimizer_input = ai_runs / f"{variant}_optimizer_input.json"
+        builder_inputs: List[Path] = [
+            scripts["build_optimizer_input"],
+            run_manifest_path,
+            metrics_path,
+            rtl_graph_path,
+            *timing_artifacts.values(),
+            *mapped_artifacts.values(),
+            *classified_artifacts.values(),
+        ]
+        needs_builder = (
+            not args.resume
+            or classification_reran
+            or force_applies(args.force_stage, "optimizer_input")
+            or not artifact_fresh(optimizer_input, builder_inputs)
+        )
+        if needs_builder:
+            command = [
+                sys.executable,
+                str(scripts["build_optimizer_input"]),
+                "--flow-variant", variant,
+                "--ai-runs-dir", str(ai_runs),
+                "--metrics-json", str(metrics_path),
+                "--output", str(optimizer_input),
+                "--context-lines", str(args.context_lines),
+                "--minimum-confidence", args.minimum_confidence,
+                "--wns-tolerance-ns", str(args.wns_tolerance_ns),
+                "--no-auto-classify",
+            ]
+            if args.allow_latency_change:
+                command.append("--allow-latency-change")
+            if args.allow_pipeline:
+                command.append("--allow-pipeline")
+            if args.allow_retiming:
+                command.append("--allow-retiming")
+
+            run_command(
+                command,
+                cwd=flow_dir,
+                stage="optimizer_input",
+                verbose=args.verbose,
+            )
+            builder_status = "passed"
+        else:
+            print(f"REUSE: {optimizer_input.name}")
+            builder_status = "reused"
+
+        packet = validate_optimizer_input(
+            optimizer_input,
+            args.design,
+            args.platform,
+            variant,
+        )
+
+        # Last gate: prove the physical-run inputs still match immediately
+        # before declaring the packet optimizer-ready.
+        flow_integrity_final = (
+            verify_current_flow_inputs(
+                script_dir=script_dir,
+                run_info=run_info,
+                design=args.design,
+                platform=args.platform,
+                phase="final_optimizer_ready_gate",
+            )
+        )
+
+        manifest[
+            "stages"
+        ][
+            "flow"
+        ][
+            "flow_input_integrity_final"
+        ] = flow_integrity_final
+
+        summary = packet.get("summary") or {}
+        validation = packet.get("validation") or {}
+        mark_stage(
+            manifest,
+            "optimizer_input",
+            builder_status,
+            output=str(optimizer_input),
+            optimizer_ready=True,
+            validation_checks=validation.get("checks"),
+            summary=summary,
+        )
+        manifest["artifacts"]["optimizer_input"] = str(optimizer_input)
+        manifest["final"] = {
+            "optimizer_ready": True,
+            "optimizer_input": str(optimizer_input),
+            "flow_input_integrity_verified": True,
+            "flow_input_aggregate_sha256": (
+                flow_integrity_final.get(
+                    "aggregate_sha256"
+                )
+            ),
+            "diagnostic_region_count": summary.get("diagnostic_region_count"),
+            "optimization_unit_count": summary.get("optimization_unit_count"),
+            "optimization_ready_unit_count": summary.get("optimization_ready_unit_count"),
+        }
+        manifest["status"] = "passed"
+        manifest["completed_at"] = utc_now()
+        write_json_atomic(manifest_path, manifest)
+
+        print_success_summary(packet, manifest_path)
+        return 0
+
+    except PipelineError as exc:
+        manifest["status"] = "failed"
+        manifest["completed_at"] = utc_now()
+        manifest["final"] = {
+            "optimizer_ready": False,
+            "failed_stage": exc.stage,
+            "failed_group": exc.group,
+            "reason": str(exc),
+            "command": exc.command,
+        }
+        mark_stage(
+            manifest,
+            exc.stage,
+            "failed",
+            group=exc.group,
+            reason=str(exc),
+            command=exc.command,
+        )
+
+        if manifest_path is None and manifest.get("flow_variant"):
+            manifest_path = ai_runs / f"{manifest['flow_variant']}_pipeline.json"
+        if manifest_path is not None:
+            try:
+                write_json_atomic(manifest_path, manifest)
+            except Exception:
+                pass
+
+        print()
+        print("=" * 72)
+        print("ANALYSIS PIPELINE FAILED")
+        print("=" * 72)
+        print(f"Stage : {exc.stage}")
+        if exc.group:
+            print(f"Group : {exc.group}")
+        print()
+        print("Reason:")
+        print(f"  {exc}")
+        if exc.command:
+            print()
+            print("Command:")
+            print("  " + " ".join(str(x) for x in exc.command))
+        if manifest_path is not None:
+            print()
+            print(f"Pipeline manifest: {manifest_path}")
+        print("=" * 72)
+
+        if args.verbose:
+            traceback.print_exc()
+        return 2
+
+    except Exception as exc:
+        manifest["status"] = "failed"
+        manifest["completed_at"] = utc_now()
+        manifest["final"] = {
+            "optimizer_ready": False,
+            "failed_stage": "internal",
+            "reason": repr(exc),
+        }
+        if manifest_path is not None:
+            try:
+                write_json_atomic(manifest_path, manifest)
+            except Exception:
+                pass
+        print()
+        print("=" * 72)
+        print("ANALYSIS PIPELINE FAILED")
+        print("=" * 72)
+        print("Stage : internal")
+        print(f"Reason: {exc}")
+        print("=" * 72)
+        if args.verbose:
+            traceback.print_exc()
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

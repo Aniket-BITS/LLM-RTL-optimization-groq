@@ -1,0 +1,653 @@
+--- /mnt/data/v14_orig/phase5_to_9_groq_r3/timing_automation/calibrate_pairs_v3.py	2026-09-14 00:34:30.000000000 +0000
++++ timing_automation/calibrate_pairs_v3.py	2026-09-14 01:11:04.770364619 +0000
+@@ -19,9 +19,9 @@
+     from timing_automation.equivalence_terms import EquivalenceVerdict
+ import re
+ try:
+-    from sta_netlist_compat import preserve_raw_and_sanitize, StaNetlistCompatError
++    from sta_netlist_compat import preserve_raw_and_sanitize, StaNetlistCompatError, orfs_yosys_netlist_target
+ except ImportError:
+-    from timing_automation.sta_netlist_compat import preserve_raw_and_sanitize, StaNetlistCompatError
++    from timing_automation.sta_netlist_compat import preserve_raw_and_sanitize, StaNetlistCompatError, orfs_yosys_netlist_target
+ 
+ import calibrate_pairs as v2
+ 
+@@ -190,43 +190,53 @@
+         f"VERILOG_FILES={source}",
+     ]
+     design_results = ROOT / "results/nangate45" / ("rtlopt_" + pair["id"]) / variant
+-    netlist = design_results / "1_2_yosys.v"
++    netlist = orfs_yosys_netlist_target(ROOT, "nangate45", "rtlopt_" + pair["id"], variant)
+     raw_netlist = design_results / "1_2_yosys.raw.v"
+     compat_meta = design_results / "1_2_yosys_sta_compat.json"
+ 
+-    preparation = None
+-    compat = None
+-    if stage != "synth":
+-        preparation = v2.run(base_command + ["synth"], directory / f"{side}.{label}.{repeat}.synth_prep.log", timeout_s)
+-        if preparation["exit_code"] != 0 or not netlist.is_file():
+-            result = dict(preparation)
+-            result.update(
+-                recipe_fingerprint_sha256=recipe.fingerprint_sha256,
+-                source_sha256=expected,
+-                status="failed",
+-                failure_reason=("synthesis_command_failed" if preparation["exit_code"] != 0 else "synthesis_netlist_not_found"),
+-                synthesis_netlist=str(netlist),
+-                synthesis_netlist_raw=str(raw_netlist if raw_netlist.is_file() else netlist),
+-                synthesis_netlist_sta=str(netlist),
+-                synthesis_preparation=preparation,
+-            )
+-            return result
+-        try:
+-            compat = preserve_raw_and_sanitize(netlist, raw_path=raw_netlist, metadata_path=compat_meta)
+-        except Exception as exc:
+-            return {
+-                **preparation,
+-                "recipe_fingerprint_sha256": recipe.fingerprint_sha256,
+-                "source_sha256": expected,
+-                "status": "failed",
+-                "failure_reason": "sta_netlist_compat_failed",
+-                "sta_netlist_compat": {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"},
+-                "synthesis_netlist": str(netlist),
+-                "synthesis_netlist_raw": str(raw_netlist if raw_netlist.is_file() else netlist),
+-                "synthesis_netlist_sta": str(netlist),
+-                "synthesis_preparation": preparation,
+-            }
++    # IMPORTANT: ORFS's phony ``synth`` target includes OpenROAD synth_odb.
++    # We need an interception point *before* OpenSTA reads the Yosys netlist,
++    # so request the exact Yosys file target first for every stage.
++    yosys_target = str(netlist)
++    preparation = v2.run(
++        base_command + [yosys_target],
++        directory / f"{side}.{label}.{repeat}.yosys_netlist.log",
++        timeout_s,
++    )
++    if preparation["exit_code"] != 0 or not netlist.is_file():
++        result = dict(preparation)
++        result.update(
++            recipe_fingerprint_sha256=recipe.fingerprint_sha256,
++            source_sha256=expected,
++            status="failed",
++            failure_reason=("yosys_synthesis_failed" if preparation["exit_code"] != 0 else "synthesis_netlist_not_found"),
++            synthesis_netlist=str(netlist),
++            synthesis_netlist_raw=str(raw_netlist if raw_netlist.is_file() else netlist),
++            synthesis_netlist_sta=str(netlist),
++            synthesis_preparation=preparation,
++            yosys_netlist_target=yosys_target,
++        )
++        return result
++
++    try:
++        compat = preserve_raw_and_sanitize(netlist, raw_path=raw_netlist, metadata_path=compat_meta)
++    except Exception as exc:
++        return {
++            **preparation,
++            "recipe_fingerprint_sha256": recipe.fingerprint_sha256,
++            "source_sha256": expected,
++            "status": "failed",
++            "failure_reason": "sta_netlist_compat_failed",
++            "sta_netlist_compat": {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"},
++            "synthesis_netlist": str(netlist),
++            "synthesis_netlist_raw": str(raw_netlist if raw_netlist.is_file() else netlist),
++            "synthesis_netlist_sta": str(netlist),
++            "synthesis_preparation": preparation,
++            "yosys_netlist_target": yosys_target,
++        }
+ 
++    # Resume the originally requested ORFS stage.  Since the sanitized
++    # 1_2_yosys.v is newer than its prerequisites, Make should not rerun Yosys.
+     result = v2.run(base_command + [stage], directory / f"{side}.{label}.{repeat}.{stage}.log", timeout_s)
+     result.update(recipe_fingerprint_sha256=recipe.fingerprint_sha256, source_sha256=expected)
+     metrics_path = ROOT / "logs/nangate45" / ("rtlopt_" + pair["id"]) / variant / "5_1_grt.json"
+@@ -234,14 +244,13 @@
+     result["synthesis_netlist"] = str(netlist)
+     result["synthesis_netlist_raw"] = str(raw_netlist if raw_netlist.is_file() else netlist)
+     result["synthesis_netlist_sta"] = str(netlist)
+-    if preparation is not None:
+-        result["synthesis_preparation"] = preparation
+-    if compat is not None:
+-        result["sta_netlist_compat"] = compat
++    result["synthesis_preparation"] = preparation
++    result["yosys_netlist_target"] = yosys_target
++    result["sta_netlist_compat"] = compat
+     if stage == "synth":
+         netlist_exists = netlist.is_file()
+         if result["exit_code"] != 0:
+-            result["failure_reason"] = "synthesis_command_failed"
++            result["failure_reason"] = "synth_odb_failed"
+         elif not netlist_exists:
+             result["failure_reason"] = "synthesis_netlist_not_found"
+         else:
+--- /mnt/data/v14_orig/phase5_to_9_groq_r3/timing_automation/run_candidate_flow.py	2026-09-14 00:32:45.000000000 +0000
++++ timing_automation/run_candidate_flow.py	2026-09-14 01:11:41.731519192 +0000
+@@ -87,9 +87,9 @@
+ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+ 
+ try:
+-    from sta_netlist_compat import preserve_raw_and_sanitize
++    from sta_netlist_compat import preserve_raw_and_sanitize, orfs_yosys_netlist_target
+ except ImportError:
+-    from timing_automation.sta_netlist_compat import preserve_raw_and_sanitize
++    from timing_automation.sta_netlist_compat import preserve_raw_and_sanitize, orfs_yosys_netlist_target
+ 
+ 
+ # =============================================================================
+@@ -663,6 +663,22 @@
+ # Run metadata
+ # =============================================================================
+ 
++def build_yosys_checkpoint_command(
++    *,
++    command: Sequence[str],
++    recipe: PhysicalRecipe,
++    flow_dir: Path,
++    flow_variant: str,
++) -> tuple[list[str], Path]:
++    """Build the pre-OpenSTA ORFS command for the exact Yosys netlist target."""
++    targets = STAGE_TARGETS[recipe.stage]
++    base_command = list(command[:-len(targets)]) if targets else list(command)
++    netlist = orfs_yosys_netlist_target(
++        flow_dir, recipe.platform, recipe.design_id, flow_variant
++    )
++    return [*base_command, str(netlist)], netlist
++
++
+ def metadata_path(
+     flow_dir: Path,
+     flow_variant: str,
+@@ -875,50 +891,50 @@
+ 
+         return metadata
+ 
+-    # For post-synthesis stages, establish the synthesis checkpoint first,
+-    # preserve the raw Yosys artifact, and sanitize only a safe structural copy
+-    # in-place for OpenSTA compatibility.  This mirrors RTL-OPT calibration.
+-    targets = STAGE_TARGETS[recipe.stage]
+-    base_command = command[:-len(targets)] if targets else list(command)
+-    synth_proc = None
+-    if recipe.stage != "synth":
+-        synth_command = [*base_command, "synth"]
+-        metadata["synthesis_command"] = synth_command
+-        metadata["synthesis_command_shell_display"] = shlex.join(synth_command)
+-        synth_proc = subprocess.run(synth_command, cwd=str(flow_dir), text=True)
+-        metadata["synthesis_returncode"] = synth_proc.returncode
+-        netlist = (
+-            flow_dir / "results" / recipe.platform / recipe.design_id / variant / "1_2_yosys.v"
+-        )
+-        raw_netlist = netlist.with_name("1_2_yosys.raw.v")
+-        compat_meta = netlist.with_name("1_2_yosys_sta_compat.json")
+-        metadata["synthesis_netlist"] = str(netlist)
+-        metadata["synthesis_netlist_raw"] = str(raw_netlist)
+-        if synth_proc.returncode != 0 or not netlist.is_file():
+-            metadata["returncode"] = synth_proc.returncode or 1
+-            metadata["stage_output_exists"] = False
+-            metadata["ok"] = False
+-            metadata["failure_reason"] = (
+-                "synthesis_command_failed" if synth_proc.returncode != 0 else "synthesis_netlist_not_found"
+-            )
+-            write_metadata(out_meta, metadata)
+-            raise CandidateFlowError(metadata["failure_reason"] + f"; metadata: {out_meta}")
+-        try:
+-            metadata["sta_netlist_compat"] = preserve_raw_and_sanitize(
+-                netlist, raw_path=raw_netlist, metadata_path=compat_meta
+-            )
+-        except Exception as exc:
+-            metadata["returncode"] = 1
+-            metadata["stage_output_exists"] = False
+-            metadata["ok"] = False
+-            metadata["failure_reason"] = "sta_netlist_compat_failed"
+-            metadata["sta_netlist_compat"] = {
+-                "status": "failed", "reason": f"{type(exc).__name__}: {exc}"
+-            }
+-            write_metadata(out_meta, metadata)
+-            raise CandidateFlowError(
+-                f"candidate STA-netlist compatibility failed: {exc}; metadata: {out_meta}"
+-            ) from exc
++    # ORFS's phony ``synth`` target includes OpenROAD synth_odb, so it is
++    # already too late for a Yosys->OpenSTA compatibility transform.  Build
++    # the exact Yosys netlist target first for *every* requested stage, preserve
++    # the raw implementation, sanitize the STA-facing copy, then resume the
++    # original stage command.
++    yosys_command, netlist = build_yosys_checkpoint_command(
++        command=command, recipe=recipe, flow_dir=flow_dir, flow_variant=variant
++    )
++    raw_netlist = netlist.with_name("1_2_yosys.raw.v")
++    compat_meta = netlist.with_name("1_2_yosys_sta_compat.json")
++    metadata["synthesis_command"] = yosys_command
++    metadata["synthesis_command_shell_display"] = shlex.join(yosys_command)
++    metadata["yosys_netlist_target"] = str(netlist)
++    metadata["synthesis_netlist"] = str(netlist)
++    metadata["synthesis_netlist_raw"] = str(raw_netlist)
++    metadata["synthesis_netlist_sta"] = str(netlist)
++
++    synth_proc = subprocess.run(yosys_command, cwd=str(flow_dir), text=True)
++    metadata["synthesis_returncode"] = synth_proc.returncode
++    if synth_proc.returncode != 0 or not netlist.is_file():
++        metadata["returncode"] = synth_proc.returncode or 1
++        metadata["stage_output_exists"] = False
++        metadata["ok"] = False
++        metadata["failure_reason"] = (
++            "yosys_synthesis_failed" if synth_proc.returncode != 0 else "synthesis_netlist_not_found"
++        )
++        write_metadata(out_meta, metadata)
++        raise CandidateFlowError(metadata["failure_reason"] + f"; metadata: {out_meta}")
++    try:
++        metadata["sta_netlist_compat"] = preserve_raw_and_sanitize(
++            netlist, raw_path=raw_netlist, metadata_path=compat_meta
++        )
++    except Exception as exc:
++        metadata["returncode"] = 1
++        metadata["stage_output_exists"] = False
++        metadata["ok"] = False
++        metadata["failure_reason"] = "sta_netlist_compat_failed"
++        metadata["sta_netlist_compat"] = {
++            "status": "failed", "reason": f"{type(exc).__name__}: {exc}"
++        }
++        write_metadata(out_meta, metadata)
++        raise CandidateFlowError(
++            f"candidate STA-netlist compatibility failed: {exc}; metadata: {out_meta}"
++        ) from exc
+ 
+     proc = subprocess.run(command, cwd=str(flow_dir), text=True)
+ 
+@@ -933,6 +949,10 @@
+     )
+ 
+     if proc.returncode != 0:
++        metadata["failure_reason"] = (
++            "synth_odb_failed" if recipe.stage == "synth" else "physical_stage_failed"
++        )
++        write_metadata(out_meta, metadata)
+         raise CandidateFlowError(
+             "candidate ORFS flow failed with "
+             f"return code {proc.returncode}; "
+@@ -940,6 +960,8 @@
+         )
+ 
+     if not stage_json.is_file():
++        metadata["failure_reason"] = "stage_metrics_missing"
++        write_metadata(out_meta, metadata)
+         raise CandidateFlowError(
+             "ORFS returned success but expected stage metric JSON "
+             f"was not produced: {stage_json}"
+--- /mnt/data/v14_orig/phase5_to_9_groq_r3/timing_automation/sta_netlist_compat.py	2026-09-14 00:31:23.000000000 +0000
++++ timing_automation/sta_netlist_compat.py	2026-09-14 01:13:40.258955067 +0000
+@@ -13,10 +13,12 @@
+ import json
+ import re
+ import shutil
++from datetime import datetime, timezone
+ from pathlib import Path
+ from typing import Any, Mapping
+ 
+ SCHEMA = "sta_netlist_compat/1"
++TRANSFORM_VERSION = "v1.4.1"
+ SIGNED_DECL_RE = re.compile(r"\b(input|output|inout|wire|reg)(\s+)signed\b")
+ BEHAVIORAL_RE = re.compile(r"\b(always|always_ff|always_comb|always_latch|initial|case|casex|casez|function|task)\b")
+ ASSIGN_RE = re.compile(r"\bassign\b(?P<expr>.*?);", re.S)
+@@ -29,6 +31,23 @@
+     pass
+ 
+ 
++def orfs_yosys_netlist_target(flow_dir: Path, platform: str, design_id: str, flow_variant: str) -> Path:
++    """Return the exact ORFS file target that is produced by Yosys only.
++
++    The phony ``synth`` target is intentionally not used because it continues
++    into OpenROAD ``synth_odb`` and therefore gives no pre-OpenSTA interception
++    point for compatibility transforms.
++    """
++    return (
++        Path(flow_dir).resolve()
++        / "results"
++        / str(platform)
++        / str(design_id)
++        / str(flow_variant)
++        / "1_2_yosys.v"
++    )
++
++
+ def sha256_file(path: Path) -> str:
+     h = hashlib.sha256()
+     with Path(path).open("rb") as f:
+@@ -100,6 +119,8 @@
+     tmp.replace(output_path)
+     result: dict[str, Any] = {
+         "schema": SCHEMA,
++        "transform_version": TRANSFORM_VERSION,
++        "generated_utc": datetime.now(timezone.utc).isoformat(),
+         "status": "passed",
+         "input_path": str(input_path),
+         "output_path": str(output_path),
+@@ -126,10 +147,51 @@
+         raw_path = synthesis_netlist.with_name(synthesis_netlist.stem + ".raw" + synthesis_netlist.suffix)
+     raw_path = Path(raw_path).resolve()
+     raw_path.parent.mkdir(parents=True, exist_ok=True)
+-    shutil.copy2(synthesis_netlist, raw_path)
++    # Idempotence matters because the same FLOW_VARIANT can first be evaluated
++    # at synth for normalized-hash dedupe and later resumed to grt.  Once the
++    # raw Yosys artifact exists, never overwrite it with the already-sanitized
++    # STA-facing copy.
++    raw_preserved_now = False
++    raw_reused = False
++    current_sha = sha256_file(synthesis_netlist)
++    prior_output_sha = None
++    if metadata_path is not None and Path(metadata_path).is_file():
++        try:
++            prior = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
++            prior_output_sha = prior.get("output_sha256") if isinstance(prior, Mapping) else None
++        except Exception:
++            prior_output_sha = None
++
++    existing_raw_matches_working_sanitized = False
++    if raw_path.is_file():
++        if prior_output_sha == current_sha:
++            existing_raw_matches_working_sanitized = True
++        elif prior_output_sha is None:
++            try:
++                raw_text = raw_path.read_text(encoding="utf-8", errors="strict")
++                expected_sta_text, _ = sanitize_text(raw_text)
++                expected_sta_sha = hashlib.sha256(expected_sta_text.encode("utf-8")).hexdigest()
++                existing_raw_matches_working_sanitized = expected_sta_sha == current_sha
++            except Exception:
++                existing_raw_matches_working_sanitized = False
++
++    if raw_path.is_file() and existing_raw_matches_working_sanitized:
++        # The working file is the previously sanitized STA copy; reuse the
++        # preserved raw implementation rather than overwriting it.
++        raw_reused = True
++    else:
++        # Either this is the first interception or Yosys genuinely regenerated
++        # the target.  Refresh raw authority from the current Yosys output.
++        shutil.copy2(synthesis_netlist, raw_path)
++        raw_preserved_now = True
++
+     result = sanitize_netlist(raw_path, synthesis_netlist, metadata_path=metadata_path)
+     result["raw_path"] = str(raw_path)
+     result["sta_path"] = str(synthesis_netlist)
++    result["raw_preserved_now"] = raw_preserved_now
++    result["raw_reused"] = raw_reused
++    if metadata_path is not None:
++        Path(metadata_path).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+     return result
+ 
+ 
+--- /mnt/data/v14_orig/phase5_to_9_groq_r3/timing_automation/aggregate_results.py	2026-09-14 00:39:44.000000000 +0000
++++ timing_automation/aggregate_results.py	2026-09-14 01:12:27.492117514 +0000
+@@ -17,6 +17,7 @@
+     "latency_result", "ppa_result", "promotion_rejection_result", "rejection_reason",
+     "primary_transformation", "proposed_transformations", "verified_latency_delta_cycles",
+     "current_best_epoch", "model_call_number", "meaningful_iteration_number",
++    "sta_netlist_compat_applied", "physical_failure_reason",
+ ]
+ 
+ 
+@@ -29,6 +30,33 @@
+     return cur
+ 
+ 
++def _sta_compat_applied(attempt: Mapping[str, Any]) -> bool:
++    for section_name in ("synthesis", "ppa", "repeat_ppa"):
++        section = attempt.get(section_name)
++        if not isinstance(section, Mapping):
++            continue
++        for side in ("baseline", "candidate", "reference"):
++            run = section.get(side)
++            if not isinstance(run, Mapping):
++                continue
++            compat = run.get("sta_netlist_compat")
++            if isinstance(compat, Mapping) and compat.get("applied") is True:
++                return True
++    return False
++
++
++def _physical_failure_reason(attempt: Mapping[str, Any]) -> Any:
++    for section_name in ("ppa", "synthesis", "repeat_ppa"):
++        section = attempt.get(section_name)
++        if not isinstance(section, Mapping):
++            continue
++        for side in ("candidate", "reference", "baseline"):
++            run = section.get(side)
++            if isinstance(run, Mapping) and run.get("failure_reason"):
++                return run.get("failure_reason")
++    return None
++
++
+ def row_for(design: str, attempt: Mapping[str, Any]) -> dict[str, Any]:
+     usage = attempt.get("groq_usage") if isinstance(attempt.get("groq_usage"), Mapping) else {}
+     guidance = attempt.get("guidance") if isinstance(attempt.get("guidance"), Mapping) else {}
+@@ -61,6 +89,8 @@
+         "current_best_epoch": attempt.get("current_best_epoch"),
+         "model_call_number": attempt.get("model_call_number"),
+         "meaningful_iteration_number": attempt.get("meaningful_iteration_number"),
++        "sta_netlist_compat_applied": _sta_compat_applied(attempt),
++        "physical_failure_reason": _physical_failure_reason(attempt),
+     }
+ 
+ 
+--- /mnt/data/v14_orig/phase5_to_9_groq_r3/timing_automation/report_guided_experiment.py	2026-09-13 22:35:50.000000000 +0000
++++ timing_automation/report_guided_experiment.py	2026-09-14 01:12:28.683690876 +0000
+@@ -31,6 +31,18 @@
+         (int(r.get("current_best_epoch") or 0) > 0) or r.get("status") == "promoted"
+         for r in results
+     )
++    def compat_applied(attempt):
++        for section_name in ("synthesis", "ppa", "repeat_ppa"):
++            section = attempt.get(section_name)
++            if not isinstance(section, dict):
++                continue
++            for side in ("baseline", "candidate", "reference"):
++                run = section.get(side)
++                if isinstance(run, dict):
++                    compat = run.get("sta_netlist_compat")
++                    if isinstance(compat, dict) and compat.get("applied") is True:
++                        return True
++        return False
+     return {
+         "design_runs": len(results),
+         "attempts": len(attempts),
+@@ -69,6 +81,25 @@
+             for a in attempts
+         ),
+         "latency_prediction_error_median_cycles": median(prediction_errors) if prediction_errors else None,
++        "sta_netlist_compat_attempt_count": sum(compat_applied(a) for a in attempts),
++        "physical_failure_reason_counts": {
++            reason: sum(
++                1 for a in attempts
++                for section_name in ("synthesis", "ppa", "repeat_ppa")
++                for section in [a.get(section_name)] if isinstance(section, dict)
++                for side in ("candidate", "reference", "baseline")
++                for run in [section.get(side)] if isinstance(run, dict)
++                if run.get("failure_reason") == reason
++            )
++            for reason in sorted({
++                run.get("failure_reason")
++                for a in attempts
++                for section_name in ("synthesis", "ppa", "repeat_ppa")
++                for section in [a.get(section_name)] if isinstance(section, dict)
++                for side in ("candidate", "reference", "baseline")
++                for run in [section.get(side)] if isinstance(run, dict) and run.get("failure_reason")
++            })
++        },
+         "metrics": metrics,
+     }
+ 
+--- /mnt/data/v14_orig/phase5_to_9_groq_r3/timing_automation/nebula_doctor.py	2026-09-14 00:36:31.000000000 +0000
++++ timing_automation/nebula_doctor.py	2026-09-14 01:12:29.888921164 +0000
+@@ -99,6 +99,29 @@
+         if not _record_file(checks, path, label):
+             failures.append(f"missing required file: {path}")
+ 
++    makefile = flow / "Makefile"
++    yosys_target_rule_ok = False
++    yosys_target_error = None
++    try:
++        makefile_text = makefile.read_text(encoding="utf-8")
++        yosys_target_rule_ok = "$(RESULTS_DIR)/1_2_yosys.v:" in makefile_text
++    except Exception as exc:
++        yosys_target_error = f"{type(exc).__name__}: {exc}"
++    checks.append({
++        "kind": "orfs_target",
++        "label": "pre-OpenSTA Yosys netlist target",
++        "path": str(makefile),
++        "ok": yosys_target_rule_ok,
++        "required": True,
++        "target": "$(RESULTS_DIR)/1_2_yosys.v",
++        "error": yosys_target_error,
++    })
++    if not yosys_target_rule_ok:
++        failures.append(
++            "ORFS Makefile does not expose the expected $(RESULTS_DIR)/1_2_yosys.v target; "
++            "STA compatibility interception cannot be guaranteed"
++        )
++
+     platform_dir = flow / "platforms" / args.platform
+     platform_cfg = platform_dir / "config.mk"
+     if not _record_file(checks, platform_cfg, f"platform config ({args.platform})"):
+--- /mnt/data/v14_orig/phase5_to_9_groq_r3/timing_automation/tests/test_sta_netlist_compat.py	2026-09-14 00:31:23.000000000 +0000
++++ timing_automation/tests/test_sta_netlist_compat.py	2026-09-14 01:13:26.946707771 +0000
+@@ -2,7 +2,7 @@
+ 
+ import pytest
+ 
+-from sta_netlist_compat import StaNetlistCompatError, preserve_raw_and_sanitize, sanitize_text
++from sta_netlist_compat import StaNetlistCompatError, preserve_raw_and_sanitize, sanitize_text, orfs_yosys_netlist_target
+ 
+ 
+ def test_signed_structural_declarations_are_safely_removed():
+@@ -37,3 +37,46 @@
+     assert "signed" not in net.read_text()
+     assert result["input_sha256"] != result["output_sha256"]
+     assert meta.is_file()
++
++
++def test_preserve_raw_is_idempotent_across_synth_then_grt(tmp_path: Path):
++    net = tmp_path / "1_2_yosys.v"
++    raw = tmp_path / "1_2_yosys.raw.v"
++    net.write_text("module m(a,y); input signed [0:0] a; output [0:0] y; BUF_X1 u(.A(a),.Z(y)); endmodule\n")
++    first = preserve_raw_and_sanitize(net, raw_path=raw)
++    raw_before = raw.read_text()
++    assert first["raw_preserved_now"] is True
++    assert "signed" in raw_before
++    assert "signed" not in net.read_text()
++
++    # A later physical stage re-enters the same FLOW_VARIANT.  The raw artifact
++    # must remain the original Yosys output rather than being overwritten by the
++    # already-sanitized working copy.
++    second = preserve_raw_and_sanitize(net, raw_path=raw)
++    assert second["raw_reused"] is True
++    assert raw.read_text() == raw_before
++    assert "signed" in raw.read_text()
++    assert "signed" not in net.read_text()
++
++
++def test_orfs_yosys_target_is_exact_file_target(tmp_path: Path):
++    target = orfs_yosys_netlist_target(tmp_path, "nangate45", "rtlopt_mul", "variant_001")
++    assert target == (tmp_path / "results/nangate45/rtlopt_mul/variant_001/1_2_yosys.v").resolve()
++
++
++def test_new_yosys_output_refreshes_raw_authority(tmp_path: Path):
++    net = tmp_path / "1_2_yosys.v"
++    raw = tmp_path / "1_2_yosys.raw.v"
++    meta = tmp_path / "1_2_yosys_sta_compat.json"
++    first_raw = "module m(a,y); input signed [0:0] a; output [0:0] y; BUF_X1 u(.A(a),.Z(y)); endmodule\n"
++    net.write_text(first_raw)
++    preserve_raw_and_sanitize(net, raw_path=raw, metadata_path=meta)
++
++    # Simulate a genuine Yosys rebuild of the same make target.
++    second_raw = "module m(a,y); input signed [1:0] a; output [1:0] y; BUF_X1 u0(.A(a[0]),.Z(y[0])); BUF_X1 u1(.A(a[1]),.Z(y[1])); endmodule\n"
++    net.write_text(second_raw)
++    result = preserve_raw_and_sanitize(net, raw_path=raw, metadata_path=meta)
++    assert result["raw_preserved_now"] is True
++    assert result["raw_reused"] is False
++    assert raw.read_text() == second_raw
++    assert "signed [1:0]" not in net.read_text()
+--- /mnt/data/v14_orig/phase5_to_9_groq_r3/timing_automation/tests/test_robustness_v14.py	2026-09-14 00:39:20.000000000 +0000
++++ timing_automation/tests/test_robustness_v14.py	2026-09-14 01:15:10.027581608 +0000
+@@ -58,7 +58,10 @@
+             "guidance": {"path_groups_sent_to_llm": 2},
+             "candidate_bundle_sha256": "abc", "formal": {"status": "passed"},
+             "latency_result": {"status": "verified", "verified_total_latency_regression_cycles": 1},
+-            "ppa": {"candidate": {}}, "primary_transformation": "pipeline_insertion",
++            "ppa": {"candidate": {
++                "failure_reason": "physical_stage_failed",
++                "sta_netlist_compat": {"applied": True},
++            }}, "primary_transformation": "pipeline_insertion",
+             "proposed_transformations": ["pipeline_insertion"],
+         }]
+     }))
+@@ -70,6 +73,8 @@
+     assert row["path_groups_considered"] == 2
+     assert row["formal_equivalence_result"] == "passed"
+     assert row["verified_latency_delta_cycles"] == 1
++    assert row["sta_netlist_compat_applied"] is True
++    assert row["physical_failure_reason"] == "physical_stage_failed"
+ 
+ 
+ def test_batch_summary_status(tmp_path: Path):
+@@ -102,9 +107,10 @@
+         result_dir = flow / "results" / "nangate45" / "rtlopt_demo" / variant
+         result_dir.mkdir(parents=True, exist_ok=True)
+         net = result_dir / "1_2_yosys.v"
+-        if cmd[-1] == "synth":
++        if str(cmd[-1]).endswith("/1_2_yosys.v"):
+             net.write_text("module demo(a,y); input signed [7:0] a; output [7:0] y; BUF_X1 u(.A(a[0]),.Z(y[0])); endmodule\n")
+             return {"exit_code": 0, "status": "passed", "log": str(log)}
++        assert cmd[-1] == "grt"
+         assert " signed " not in net.read_text()
+         metrics_dir = flow / "logs" / "nangate45" / "rtlopt_demo" / variant
+         metrics_dir.mkdir(parents=True, exist_ok=True)
+@@ -129,4 +135,53 @@
+     sta = Path(result["synthesis_netlist_sta"])
+     assert "signed" in raw.read_text()
+     assert " signed " not in sta.read_text()
+-    assert [c[-1] for c in calls] == ["synth", "grt"]
++    assert str(calls[0][-1]).endswith("/1_2_yosys.v")
++    assert calls[0][-1] != "synth"
++    assert calls[1][-1] == "grt"
++
++
++def test_candidate_flow_uses_exact_yosys_target_not_phony_synth(tmp_path: Path):
++    import run_candidate_flow as rcf
++
++    class Recipe:
++        stage = "global_route"
++        platform = "nangate45"
++        design_id = "rtlopt_demo"
++
++    original = [
++        "make",
++        "DESIGN_CONFIG=/tmp/config.mk",
++        "FLOW_VARIANT=demo_variant",
++        "VERILOG_FILES=/tmp/demo.v",
++        "grt",
++    ]
++    cmd, target = rcf.build_yosys_checkpoint_command(
++        command=original, recipe=Recipe(), flow_dir=tmp_path, flow_variant="demo_variant"
++    )
++    assert cmd[-1] == str(target)
++    assert target.name == "1_2_yosys.v"
++    assert cmd[-1] != "synth"
++    assert "grt" not in cmd
++
++
++def test_candidate_flow_synth_stage_still_intercepts_before_synth_odb(tmp_path: Path):
++    import run_candidate_flow as rcf
++
++    class Recipe:
++        stage = "synth"
++        platform = "nangate45"
++        design_id = "rtlopt_demo"
++
++    original = [
++        "make",
++        "DESIGN_CONFIG=/tmp/config.mk",
++        "FLOW_VARIANT=demo_variant",
++        "VERILOG_FILES=/tmp/demo.v",
++        "synth",
++    ]
++    cmd, target = rcf.build_yosys_checkpoint_command(
++        command=original, recipe=Recipe(), flow_dir=tmp_path, flow_variant="demo_variant"
++    )
++    assert cmd[-1] == str(target)
++    assert cmd[-1] != "synth"
++    assert "synth" not in cmd[1:]

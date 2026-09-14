@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nebula.local/schemas/optimizer_response.schema.json",
+  "title": "nEBULA Complete Verilog Response",
+  "description": "One complete candidate design. Return the entire Verilog content of every SourceBundle source file, including unchanged files; no patches, line ranges, placeholders, or suggested edits.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "chosen_pattern_id",
+    "source_files",
+    "rationale",
+    "predicted_wns_gain_ns",
+    "self_checks",
+    "target_unit_id",
+    "predicted_area_change_pct",
+    "predicted_power_change_pct"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "3.0"
+    },
+    "chosen_pattern_id": {
+      "description": "Optimization pattern used to guide the rewrite. Exploratory rewrites may use null.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_unit_id": {
+      "description": "Optional optimization-unit identifier supplied by build_request.py.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rationale": {
+      "description": "Brief explanation of the implemented complete-source optimization.",
+      "type": "string",
+      "minLength": 1
+    },
+    "predicted_wns_gain_ns": {
+      "description": "Model-estimated WNS improvement in nanoseconds. This is advisory only and is never trusted for acceptance.",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "predicted_area_change_pct": {
+      "description": "Optional model-estimated area percentage change. Negative means smaller.",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "predicted_power_change_pct": {
+      "description": "Optional model-estimated power percentage change. Negative means lower.",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "self_checks": {
+      "$ref": "#/$defs/self_checks"
+    },
+    "source_files": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Every SourceBundle file exactly once, with its complete candidate source text.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target_file",
+          "original_sha256",
+          "verilog"
+        ],
+        "properties": {
+          "target_file": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact file path from SourceBundle."
+          },
+          "original_sha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "verilog": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Complete compilable Verilog file, including all modules, declarations, assignments and always blocks. No omissions or Markdown fences."
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+    "self_checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interface_unchanged",
+        "parameters_unchanged",
+        "latency_unchanged",
+        "clock_reset_behavior_unchanged",
+        "source_bundle_targets_valid",
+        "no_new_latches",
+        "no_new_clock_domains"
+      ],
+      "properties": {
+        "interface_unchanged": {
+          "type": "boolean"
+        },
+        "parameters_unchanged": {
+          "type": "boolean"
+        },
+        "latency_unchanged": {
+          "type": "boolean"
+        },
+        "clock_reset_behavior_unchanged": {
+          "type": "boolean"
+        },
+        "source_bundle_targets_valid": {
+          "type": "boolean"
+        },
+        "no_new_latches": {
+          "type": "boolean"
+        },
+        "no_new_clock_domains": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$comment": "v3: complete source files; exact bundle identity, structural checks, frozen lines, formal and PPA gates remain enforced."
+}

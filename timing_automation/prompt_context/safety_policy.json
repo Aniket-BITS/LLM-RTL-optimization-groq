@@ -1,0 +1,15 @@
+{
+  "schema": "nebula_fixed_safety_policy/2",
+  "mandatory_invariants": [
+    "Preserve the module interfaces and parameter behavior required by the supplied design manifest.",
+    "Preserve exact cycle-by-cycle functionality and latency unless the request explicitly permits a latency change.",
+    "Preserve clock and reset behavior.",
+    "Preserve register and state boundaries unless the request explicitly permits retiming/state changes.",
+    "Do not introduce new clocks, clock domains, latches, or sequential state unless explicitly permitted by policy.",
+    "Modify only files and modules that belong to the exact supplied SourceBundle snapshot; diagnostic focus ranges are recommendations, not edit restrictions.",
+    "Use the supplied original SHA-256 for each complete source file you return.",
+    "Keep widths and signedness functionally equivalent.",
+    "For guided mode, recommended patterns are suggestions. For exploratory mode, no named pattern is required. Formal equivalence and physical evaluation are authoritative."
+  ],
+  "trust_boundary": "Model self-checks and diagnostic focus adherence are advisory and are never used as functional-correctness gates. nEBULA independently enforces exact SourceBundle identity and per-file hashes, module ownership, structural/state-boundary policy, formal functional equivalence, and same-recipe physical PPA comparison."
+}

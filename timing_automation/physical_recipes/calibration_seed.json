@@ -1,0 +1,56 @@
+{
+  "schema": "physical_recipe_spec/1",
+  "recipe_id": "mapper_qualified_0p6ns_fixed_geometry_v2",
+  "design": {
+    "design_id": "mapper_reconvergent_test",
+    "top": "mapper_reconvergent_test",
+    "platform": "nangate45"
+  },
+  "stage": "global_route",
+  "files": [
+    {
+      "role": "design_config",
+      "path": "config.mk"
+    },
+    {
+      "role": "constraints",
+      "path": "constraint.sdc"
+    },
+    {
+      "role": "pdn",
+      "path": "timing_automation/physical_recipes/nebula_nangate45_pdn.tcl"
+    },
+    {
+      "role": "platform_config",
+      "path": "platforms/nangate45/config.mk"
+    },
+    {
+      "role": "timing_library",
+      "path": "platforms/nangate45/lib/NangateOpenCellLibrary_typical.lib"
+    },
+    {
+      "role": "timing_repair_hook",
+      "path": "timing_automation/physical_recipes/nebula_nangate45_repair_budget.tcl"
+    }
+  ],
+  "flow_variables": {
+    "DIE_AREA": "0.0 0.0 56.595 56.595",
+    "CORE_AREA": "2.09 2.8 54.53 53.2",
+    "CORE_UTILIZATION": "",
+    "PLACE_DENSITY": 0.6,
+    "NUM_CORES": 4,
+    "PDN_TCL": "timing_automation/physical_recipes/nebula_nangate45_pdn.tcl",
+    "PRE_CTS_TCL": "timing_automation/physical_recipes/nebula_nangate45_repair_budget.tcl"
+  },
+  "stage_settings": {
+    "stop_after": "global_route"
+  },
+  "toolchain": {},
+  "metadata": {
+    "clock_period_ns": 0.6,
+    "io_delay_max_ns": 0.1,
+    "clock_uncertainty_ns": 0.02,
+    "geometry_origin": "run_20260907_114531_c62c53/2_floorplan.odb",
+    "purpose": "same-recipe baseline and candidate comparison; no adaptive candidate floorplan"
+  }
+}

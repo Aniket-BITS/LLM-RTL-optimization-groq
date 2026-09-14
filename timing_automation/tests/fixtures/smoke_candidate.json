@@ -1,0 +1,34 @@
+{
+  "schema_version": "2.0",
+  "chosen_pattern_id": "arith.csla_split",
+  "target_unit_id": "unit_000",
+  "rationale": "Equivalent operand-order rewrite for the widened add.",
+  "predicted_wns_gain_ns": 0.0,
+  "predicted_area_change_pct": 0.0,
+  "predicted_power_change_pct": 0.0,
+  "self_checks": {
+    "interface_unchanged": true,
+    "parameters_unchanged": true,
+    "latency_unchanged": true,
+    "clock_reset_behavior_unchanged": true,
+    "source_bundle_targets_valid": true,
+    "no_new_latches": true,
+    "no_new_clock_domains": true,
+    "notes": []
+  },
+  "patches": [
+    {
+      "patch_id": "patch_add",
+      "patch_type": "line_range",
+      "target_file": "nebula_smoke.v",
+      "target_module": "nebula_smoke",
+      "original_sha256": "e8a5709e36668b36ac0b8fa7ece61cb85b91dfe1762e4b507a2e83fa1f306492",
+      "changed_source_range": {
+        "start_line": 14,
+        "end_line": 14
+      },
+      "replacement_text": "assign add_full = {1'b0, b} + {1'b0, a};\n",
+      "rationale": "Equivalent operand-order rewrite for the widened add."
+    }
+  ]
+}

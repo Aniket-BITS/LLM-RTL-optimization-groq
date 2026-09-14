@@ -1,0 +1,118 @@
+usage: run_rtl_opt_groq.py [-h] [--output OUTPUT] [--pairs [PAIRS ...]]
+                           [--model MODEL] [--max-tokens MAX_TOKENS]
+                           [--reasoning-effort {low,medium,high}]
+                           [--temperature TEMPERATURE]
+                           [--max-attempts MAX_ATTEMPTS]
+                           [--max-model-calls MAX_MODEL_CALLS]
+                           [--max-meaningful-iterations MAX_MEANINGFUL_ITERATIONS]
+                           [--max-latency-regression-cycles MAX_LATENCY_REGRESSION_CYCLES]
+                           [--convergence-duplicate-limit CONVERGENCE_DUPLICATE_LIMIT]
+                           [--convergence-min-unique-syntheses CONVERGENCE_MIN_UNIQUE_SYNTHESES]
+                           [--optimizer-mode {auto,guided,exploratory}]
+                           [--guidance-source {timing-report}]
+                           [--max-guidance-groups MAX_GUIDANCE_GROUPS]
+                           [--max-excerpts-per-group MAX_EXCERPTS_PER_GROUP]
+                           [--max-guidance-chars MAX_GUIDANCE_CHARS]
+                           [--model-history-limit MODEL_HISTORY_LIMIT]
+                           [--formal-timeout-s FORMAL_TIMEOUT_S]
+                           [--ppa-timeout-s PPA_TIMEOUT_S]
+                           [--max-area-regression-pct MAX_AREA_REGRESSION_PCT]
+                           [--max-power-regression-pct MAX_POWER_REGRESSION_PCT]
+                           [--max-setup-slack-regression-ns MAX_SETUP_SLACK_REGRESSION_NS]
+                           [--max-hold-slack-regression-ns MAX_HOLD_SLACK_REGRESSION_NS]
+                           [--experiment {single,paired-guidance}]
+                           [--repetitions REPETITIONS] [--self-test]
+
+Run Groq-generated RTL optimization with immutable Golden and promoted Current
+Best. Core architecture: * GOLDEN is immutable and is always the formal
+correctness reference. * CURRENT BEST starts as Golden and changes only after
+repeat-confirmed promotion. * The model chooses one editing base (golden or
+current_best) for each candidate. * Exact/source-only duplicates are rejected
+before formal. * Normalized synthesis equivalence remains backend-
+authoritative and skips PPA. * PPA always compares the candidate against the
+unchanged Current Best snapshot. * A model no_further_optimization response is
+advisory; backend convergence owns stop. Latency-changing/pipelining
+verification is policy-controlled. Budget zero preserves the validated cycle-
+exact path; positive budgets enable backend-proven fixed-cycle temporal
+equivalence against frozen Golden before synthesis/PPA.
+
+options:
+  -h, --help            show this help message and exit
+  --output OUTPUT       new immutable run directory (default: timestamp plus
+                        unique ID)
+  --pairs [PAIRS ...]   RTL-OPT pair ids; defaults to the first ten corpus
+                        entries
+  --model MODEL
+  --max-tokens MAX_TOKENS
+  --reasoning-effort {low,medium,high}
+  --temperature TEMPERATURE
+  --max-attempts MAX_ATTEMPTS
+                        backward-compatible default for model-call and
+                        meaningful-iteration limits
+  --max-model-calls MAX_MODEL_CALLS
+                        hard cap on provider/model invocations; defaults to
+                        --max-attempts
+  --max-meaningful-iterations MAX_MEANINGFUL_ITERATIONS
+                        cap on novel structurally valid candidates reaching
+                        semantic verification; defaults to --max-attempts
+  --max-latency-regression-cycles MAX_LATENCY_REGRESSION_CYCLES
+                        maximum backend-verified total latency regression from
+                        frozen Golden; 0 preserves cycle-exact behavior
+  --convergence-duplicate-limit CONVERGENCE_DUPLICATE_LIMIT
+                        early-stop duplicate-hit threshold after enough unique
+                        rejected syntheses; 0 disables
+  --convergence-min-unique-syntheses CONVERGENCE_MIN_UNIQUE_SYNTHESES
+                        minimum distinct comparable rejected syntheses in the
+                        current-best epoch before convergence can stop
+  --optimizer-mode {auto,guided,exploratory}
+  --guidance-source {timing-report}
+  --max-guidance-groups MAX_GUIDANCE_GROUPS
+  --max-excerpts-per-group MAX_EXCERPTS_PER_GROUP
+  --max-guidance-chars MAX_GUIDANCE_CHARS
+  --model-history-limit MODEL_HISTORY_LIMIT
+                        maximum recent meaningful attempts sent verbatim to
+                        the model; older history is aggregated
+  --formal-timeout-s FORMAL_TIMEOUT_S
+                        per temporal/cycle-exact formal invocation timeout in
+                        seconds
+  --ppa-timeout-s PPA_TIMEOUT_S
+                        per ORFS synthesis/physical stage timeout in seconds
+  --max-area-regression-pct MAX_AREA_REGRESSION_PCT
+  --max-power-regression-pct MAX_POWER_REGRESSION_PCT
+  --max-setup-slack-regression-ns MAX_SETUP_SLACK_REGRESSION_NS
+  --max-hold-slack-regression-ns MAX_HOLD_SLACK_REGRESSION_NS
+  --experiment {single,paired-guidance}
+  --repetitions REPETITIONS
+  --self-test
+
+
+=== rtl-opt-batch ===
+usage: run_rtl_opt_batch.py [-h] --output OUTPUT --pairs PAIRS [PAIRS ...]
+                            [--resume] [--retry-failed]
+                            [--max-design-runtime-min MAX_DESIGN_RUNTIME_MIN]
+
+Fault-isolated multi-design wrapper for rtl-opt-groq. Each design runs in its
+own subprocess/output directory so one baseline/tool failure cannot terminate
+the rest of a benchmark sweep. Resume is intentionally design-granular:
+completed designs are skipped; failed/incomplete designs can be archived and
+retried without destroying evidence.
+
+options:
+  -h, --help            show this help message and exit
+  --output OUTPUT
+  --pairs PAIRS [PAIRS ...]
+  --resume              skip completed design directories
+  --retry-failed        archive and rerun completed non-success designs
+  --max-design-runtime-min MAX_DESIGN_RUNTIME_MIN
+                        subprocess wall-clock limit per design; 0 disables
+
+
+=== aggregate-results ===
+usage: aggregate_results.py [-h] --root ROOT --output-prefix OUTPUT_PREFIX
+
+Aggregate nEBULA per-attempt evidence into canonical JSON and CSV tables.
+
+options:
+  -h, --help            show this help message and exit
+  --root ROOT
+  --output-prefix OUTPUT_PREFIX

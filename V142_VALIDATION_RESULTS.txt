@@ -1,0 +1,24 @@
+V1.4.2 VALIDATION RESULTS
+
+Scope
+- Micro-hotfix only: pass the ORFS Yosys checkpoint to GNU Make as a path relative to the flow root.
+- Keep absolute artifact paths for Python I/O, raw preservation, hashing, and STA sanitization.
+- No optimizer/prompt/formal/latency/PPA/promotion semantics changed.
+
+Static/unit validation in assistant environment
+- Python compilation: PASS
+- Targeted tests: 30 passed
+- Full timing_automation/tests suite: 76 passed, 14 skipped
+- Top-level self_test.py: PASS
+- Guided runner tests: 11/11 PASS
+- Verified candidate/calibration exact target form: results/<platform>/<design>/<variant>/1_2_yosys.v
+- Verified Make target is not absolute and is not the phony synth target.
+- Verified normalized synthesis authority remains the raw Yosys artifact.
+
+Not run here
+- Live Groq
+- Local ORFS/Yosys/OpenROAD
+- Real mul/saturating_add PPA
+
+Required local runtime validation
+- Re-run mul and confirm GNU Make resolves the relative 1_2_yosys.v rule, raw/sanitized artifacts are created, STA-0171 signed-declaration failure disappears, and baseline selection reaches the optimizer.

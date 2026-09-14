@@ -1,0 +1,43 @@
+{
+  "clocks": [
+    {
+      "name": "clk",
+      "period_ns": 2.0,
+      "port": "clk"
+    }
+  ],
+  "constraints": {
+    "sdc": "constraint.sdc"
+  },
+  "dataset": "nebula_fixture",
+  "defines": [],
+  "design_id": "nebula_smoke",
+  "include_dirs": [],
+  "language": "verilog",
+  "metadata": {
+    "purpose": "self-contained nEBULA smoke fixture"
+  },
+  "parameters": {},
+  "physical": {
+    "evaluation_stage": "global_route",
+    "freeze_after_baseline": true,
+    "platform": "nangate45",
+    "settings": {}
+  },
+  "resets": [],
+  "schema_version": "1.0",
+  "source_files": [
+    "nebula_smoke.v"
+  ],
+  "source_hashes": {
+    "nebula_smoke.v": "e8a5709e36668b36ac0b8fa7ece61cb85b91dfe1762e4b507a2e83fa1f306492"
+  },
+  "top": "nebula_smoke",
+  "verification": {
+    "backend": "yosys",
+    "mode": "combinational_cec",
+    "options": {
+      "timeout_s": 30
+    }
+  }
+}

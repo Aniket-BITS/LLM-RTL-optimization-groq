@@ -1,0 +1,42 @@
+nEBULA latency-aware v1 packaging validation
+Date: 2026-09-14
+
+[1] py_compile
+PASS
+
+[2] response schema Draft 2020-12 validation
+PASS timing_automation/response_schema_latency.json
+PASS timing_automation/response_schema_prefreeze.json
+PASS timing_automation/response_schema.json
+
+[3] focused pytest
+...........................                                              [100%]
+27 passed in 1.18s
+
+[4] runner self-test
+test_bounded_slack_regression (test_guided_rtl_opt.PolicyTests.test_bounded_slack_regression) ... ok
+test_current_best_reference_is_recorded (test_guided_rtl_opt.PolicyTests.test_current_best_reference_is_recorded) ... ok
+test_compact_history_hides_raw_hash (test_guided_rtl_opt.PromptAndHistoryTests.test_compact_history_hides_raw_hash) ... ok
+test_infrastructure_does_not_reject_family (test_guided_rtl_opt.PromptAndHistoryTests.test_infrastructure_does_not_reject_family) ... ok
+test_prompt_roles_and_authority (test_guided_rtl_opt.PromptAndHistoryTests.test_prompt_roles_and_authority) ... ok
+test_aggregate_tracks_duplicate_and_stop_types (test_guided_rtl_opt.ReportTests.test_aggregate_tracks_duplicate_and_stop_types) ... ok
+test_convergence_is_current_best_epoch_scoped (test_guided_rtl_opt.SynthesisAndConvergenceTests.test_convergence_is_current_best_epoch_scoped) ... ok
+test_model_stop_needs_backend_evidence (test_guided_rtl_opt.SynthesisAndConvergenceTests.test_model_stop_needs_backend_evidence) ... ok
+test_normalized_hash_and_noop (test_guided_rtl_opt.SynthesisAndConvergenceTests.test_normalized_hash_and_noop) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.001s
+
+OK
+
+[5] environment capability
+Yosys: NOT PRESENT in packaging container
+GROQ_API_KEY: NOT PRESENT in packaging container
+No live Groq/Yosys/OpenROAD latency run performed here.
+
+Runtime follow-up from user adder latency run:
+- Temporal proof scripts reached Yosys SAT but failed with: No SAT model available for cell cand_i (nebula_gate).
+- Root cause: completed latency harness was prepared without -flatten, leaving nebula_gold/nebula_gate hierarchical cells unsupported by SAT.
+- Fix: final harness prep now uses `prep -flatten -top nebula_latency_harness`.
+- User run contained a genuine model-proposed +1 pipeline candidate (attempt 4), but its temporal equivalence was not judged because of this verifier setup failure.
+- Packaging-container validation after fix: 59 passed, 14 skipped; no local Yosys/ORFS/Groq execution performed.

@@ -1,0 +1,29 @@
+nEBULA latency-aware compact transformation-choice validation
+Date: 2026-09-14
+
+Implemented:
+- LLM remains free to choose pipeline insertion from the first attempt when latency headroom exists.
+- Latency is described as a limited optimization resource; no attempt-count/stagnation transform gate was added.
+- Response schema bumped to 3.3 with primary_transformation + proposed_transformations; vague mixed classification removed.
+- Backend records structural_effects independently from model transformation intent.
+- Model-visible history is bounded to the last 5 meaningful attempts by default; older history is aggregated into search_summary.
+- Latest feedback is compacted to essential PPA/latency fields.
+- Identical Golden/Current-Best RTL source text is not duplicated (existing v1.1 mechanism retained and regression-tested).
+- max completion tokens remains 6500.
+- Existing temporal verifier flatten fix is retained unchanged.
+- Legacy schema-3.0 replay is now strictly validated before compatibility extraction.
+
+Validation performed in assistant environment:
+- Python py_compile: PASS
+- Draft 2020-12 latency schema validation: PASS
+- Focused pytest: 70 passed, 14 skipped
+- run_rtl_opt_groq.py --self-test: PASS (11 tests)
+- top-level self_test.py: PASS
+
+Not run in assistant environment:
+- Groq/API generation
+- Yosys temporal proof
+- synthesis
+- OpenROAD/PPA
+
+A local end-to-end rerun is still required to validate model behavior and the temporal proof after the earlier hierarchy-flattening fix.

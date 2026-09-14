@@ -1,0 +1,1312 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import re
+import subprocess
+import tempfile
+
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+
+SCHEMA = "nebula_select_sat/1"
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def norm(value: Any) -> str:
+    text = str(value or "").strip()
+    return text[1:] if text.startswith("\\") else text
+
+
+def yosys_quote(path: Path) -> str:
+    return (
+        '"'
+        + str(path)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        + '"'
+    )
+
+
+def load_json(path: Path) -> Dict[str, Any]:
+    with path.open() as f:
+        value = json.load(f)
+
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"Expected JSON object: {path}"
+        )
+
+    return value
+
+
+def find_top(
+    raw: Dict[str, Any],
+    rtl_top: str,
+) -> Tuple[str, Dict[str, Any]]:
+
+    modules = raw.get("modules") or {}
+
+    for name, module in modules.items():
+
+        if norm(name) == norm(rtl_top):
+
+            return name, module
+
+    raise KeyError(
+        f"Top module '{rtl_top}' not found "
+        "in regenerated Yosys JSON."
+    )
+
+
+def regenerate_preabc_json(
+    *,
+    checkpoint: Path,
+    rtl_top: str,
+    yosys: Path,
+    output: Path,
+) -> None:
+
+    script = "\n".join(
+        [
+            f"read_rtlil {yosys_quote(checkpoint)}",
+            f"hierarchy -check -top {rtl_top}",
+            "proc",
+            "flatten",
+            "opt_clean",
+            f"write_json {yosys_quote(output)}",
+        ]
+    )
+
+    result = subprocess.run(
+        [
+            str(yosys),
+            "-Q",
+            "-p",
+            script,
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+    if result.returncode != 0:
+
+        tail = "\n".join(
+            (result.stdout or "")
+            .splitlines()[-80:]
+        )
+
+        raise RuntimeError(
+            "Failed to regenerate exact pre-ABC "
+            "Yosys model:\n"
+            + tail
+        )
+
+
+def collect_select_cones(
+    mapped: Dict[str, Any],
+) -> Tuple[
+    Dict[int, Dict[str, Any]],
+    Dict[int, List[Dict[str, Any]]],
+]:
+
+    cones: Dict[
+        int,
+        Dict[str, Any],
+    ] = {}
+
+    occurrences: Dict[
+        int,
+        List[Dict[str, Any]],
+    ] = {}
+
+    for path_index, item in enumerate(
+        mapped.get("paths") or []
+    ):
+
+        mapping = (
+            item.get("rtl_mapping")
+            or {}
+        )
+
+        for point in (
+            mapping.get(
+                "logical_branch_points"
+            )
+            or []
+        ):
+
+            cell = point.get("cell")
+
+            select_bits = [
+                int(bit)
+                for bit in (
+                    point.get(
+                        "select_bits"
+                    )
+                    or []
+                )
+            ]
+
+            cone_by_bit = {
+                int(cone["bit"]): cone
+
+                for cone in (
+                    point.get(
+                        "select_cones"
+                    )
+                    or []
+                )
+
+                if isinstance(
+                    cone,
+                    dict,
+                )
+                and cone.get("bit")
+                is not None
+            }
+
+
+            for bit in select_bits:
+
+                if bit not in cone_by_bit:
+
+                    raise ValueError(
+                        f"Select bit {bit} has no "
+                        "select_cone metadata."
+                    )
+
+                cone = cone_by_bit[
+                    bit
+                ]
+
+                previous = cones.get(
+                    bit
+                )
+
+                if previous is not None:
+
+                    if json.dumps(
+                        previous,
+                        sort_keys=True,
+                    ) != json.dumps(
+                        cone,
+                        sort_keys=True,
+                    ):
+
+                        raise ValueError(
+                            "Conflicting select-cone "
+                            f"metadata for bit {bit}."
+                        )
+
+                else:
+
+                    cones[
+                        bit
+                    ] = cone
+
+
+                occurrences.setdefault(
+                    bit,
+                    [],
+                ).append(
+                    {
+                        "path_index": (
+                            path_index
+                        ),
+                        "cell": cell,
+                        "ambiguous_outputs": (
+                            point.get(
+                                "ambiguous_outputs"
+                            )
+                            or []
+                        ),
+                    }
+                )
+
+
+    return (
+        cones,
+        occurrences,
+    )
+
+
+def verify_graph_identity(
+    *,
+    raw: Dict[str, Any],
+    rtl_top: str,
+    cones: Dict[int, Dict[str, Any]],
+    occurrences: Dict[
+        int,
+        List[Dict[str, Any]],
+    ],
+) -> None:
+
+    _, module = find_top(
+        raw,
+        rtl_top,
+    )
+
+
+    cells = {
+        norm(name): cell
+
+        for name, cell in (
+            module.get("cells")
+            or {}
+        ).items()
+    }
+
+
+    primary_input_bits = set()
+
+    for port in (
+        module.get("ports")
+        or {}
+    ).values():
+
+        direction = norm(
+            port.get("direction")
+        ).lower()
+
+        if direction not in (
+            "input",
+            "inout",
+        ):
+
+            continue
+
+        primary_input_bits.update(
+            bit
+            for bit in (
+                port.get("bits")
+                or []
+            )
+            if isinstance(bit, int)
+        )
+
+
+    for bit, cone in cones.items():
+
+        for boundary_bit in (
+            cone.get(
+                "boundary_input_bits"
+            )
+            or []
+        ):
+
+            if (
+                boundary_bit
+                not in primary_input_bits
+            ):
+
+                raise RuntimeError(
+                    "Pre-ABC identity verification "
+                    "failed: select cone "
+                    f"{bit} claims boundary input "
+                    f"{boundary_bit}, but that bit "
+                    "is not a raw-Yosys PI."
+                )
+
+
+        for occurrence in (
+            occurrences.get(bit)
+            or []
+        ):
+
+            cell_name = norm(
+                occurrence.get("cell")
+            )
+
+            raw_cell = cells.get(
+                cell_name
+            )
+
+            if raw_cell is None:
+
+                raise RuntimeError(
+                    "Pre-ABC identity verification "
+                    f"failed: mux {cell_name} "
+                    "not present in regenerated "
+                    "Yosys model."
+                )
+
+
+            if norm(
+                raw_cell.get("type")
+            ) != "$mux":
+
+                raise RuntimeError(
+                    "Pre-ABC identity verification "
+                    f"failed: {cell_name} is no "
+                    "longer a $mux."
+                )
+
+
+            raw_select_bits = {
+                raw_bit
+                for raw_bit in (
+                    (
+                        raw_cell.get(
+                            "connections"
+                        )
+                        or {}
+                    ).get(
+                        "S"
+                    )
+                    or []
+                )
+                if isinstance(
+                    raw_bit,
+                    int,
+                )
+            }
+
+
+            if bit not in raw_select_bits:
+
+                raise RuntimeError(
+                    "Pre-ABC identity verification "
+                    "failed: Nebula select bit "
+                    f"{bit} is not on {cell_name}.S "
+                    f"in regenerated model: "
+                    f"{sorted(raw_select_bits)}"
+                )
+
+
+def add_alias(
+    *,
+    module: Dict[str, Any],
+    name: str,
+    bit: int,
+) -> None:
+
+    ports = module.setdefault(
+        "ports",
+        {},
+    )
+
+    netnames = module.setdefault(
+        "netnames",
+        {},
+    )
+
+
+    if (
+        name in ports
+        or name in netnames
+    ):
+
+        raise RuntimeError(
+            f"Temporary SAT alias collision: "
+            f"{name}"
+        )
+
+
+    ports[name] = {
+        "direction": "output",
+        "bits": [bit],
+    }
+
+    netnames[name] = {
+        "hide_name": 0,
+        "bits": [bit],
+        "attributes": {},
+    }
+
+
+def parse_scalar(
+    output: str,
+    signal: str,
+) -> Optional[str]:
+
+    pattern = re.compile(
+        rf"^\s*\\?{re.escape(signal)}"
+        rf"\s+.*?\s+([01xXzZ])\s*$",
+        re.MULTILINE,
+    )
+
+    match = pattern.search(
+        output
+    )
+
+    if match is None:
+        return None
+
+    return (
+        match.group(1)
+        .lower()
+    )
+
+
+def run_sat_query(
+    *,
+    base_raw: Dict[str, Any],
+    top_name: str,
+    rtl_top: str,
+    yosys: Path,
+    select_bit: int,
+    boundary_bits: List[int],
+    requested_value: int,
+    timeout_s: int,
+    work_dir: Path,
+) -> Dict[str, Any]:
+
+    design = copy.deepcopy(
+        base_raw
+    )
+
+    module = design[
+        "modules"
+    ][
+        top_name
+    ]
+
+
+    select_alias = (
+        f"nebula_sat_select_"
+        f"{select_bit}"
+    )
+
+    add_alias(
+        module=module,
+        name=select_alias,
+        bit=select_bit,
+    )
+
+
+    boundary_aliases = []
+
+    for bit in boundary_bits:
+
+        alias = (
+            f"nebula_sat_boundary_"
+            f"{bit}"
+        )
+
+        add_alias(
+            module=module,
+            name=alias,
+            bit=bit,
+        )
+
+        boundary_aliases.append(
+            (
+                bit,
+                alias,
+            )
+        )
+
+
+    model_path = (
+        work_dir
+        / (
+            f"select_{select_bit}_"
+            f"{requested_value}.json"
+        )
+    )
+
+    model_path.write_text(
+        json.dumps(
+            design,
+        )
+    )
+
+
+    show_args = " ".join(
+        f"-show {alias}"
+        for _, alias in (
+            boundary_aliases
+        )
+    )
+
+
+    script = "\n".join(
+        [
+            (
+                "read_json "
+                + yosys_quote(
+                    model_path
+                )
+            ),
+            (
+                "hierarchy -check -top "
+                + rtl_top
+            ),
+            (
+                "select -module "
+                + rtl_top
+            ),
+            (
+                "sat "
+                f"-timeout {timeout_s} "
+                "-set-def-inputs "
+                f"-set {select_alias} "
+                f"{requested_value} "
+                f"-show {select_alias} "
+                f"{show_args}"
+            ),
+        ]
+    )
+
+
+    result = subprocess.run(
+        [
+            str(yosys),
+            "-Q",
+            "-p",
+            script,
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+
+    output = (
+        result.stdout
+        or ""
+    )
+
+
+    if result.returncode != 0:
+
+        return {
+            "status": "solver_error",
+            "requested_value": (
+                requested_value
+            ),
+            "boundary_assignment": {},
+            "reason": (
+                "yosys_nonzero_exit"
+            ),
+            "returncode": (
+                result.returncode
+            ),
+            "log_tail": (
+                output.splitlines()[-40:]
+            ),
+        }
+
+
+    if (
+        "SAT solving finished - "
+        "model found:"
+        in output
+    ):
+
+        status = "sat"
+
+    elif (
+        "SAT solving finished - "
+        "no model found"
+        in output
+    ):
+
+        status = "unsat"
+
+    else:
+
+        return {
+            "status": "solver_error",
+            "requested_value": (
+                requested_value
+            ),
+            "boundary_assignment": {},
+            "reason": (
+                "unrecognized_solver_result"
+            ),
+            "returncode": (
+                result.returncode
+            ),
+            "log_tail": (
+                output.splitlines()[-40:]
+            ),
+        }
+
+
+    if status == "unsat":
+
+        return {
+            "status": "unsat",
+            "requested_value": (
+                requested_value
+            ),
+            "boundary_assignment": {},
+        }
+
+
+    observed_select = parse_scalar(
+        output,
+        select_alias,
+    )
+
+    if observed_select != str(
+        requested_value
+    ):
+
+        return {
+            "status": "solver_error",
+            "requested_value": (
+                requested_value
+            ),
+            "boundary_assignment": {},
+            "reason": (
+                "select_model_mismatch"
+            ),
+            "observed_select": (
+                observed_select
+            ),
+            "log_tail": (
+                output.splitlines()[-40:]
+            ),
+        }
+
+
+    assignment = {}
+
+    for bit, alias in (
+        boundary_aliases
+    ):
+
+        value = parse_scalar(
+            output,
+            alias,
+        )
+
+        if value not in (
+            "0",
+            "1",
+        ):
+
+            return {
+                "status": "solver_error",
+                "requested_value": (
+                    requested_value
+                ),
+                "boundary_assignment": {},
+                "reason": (
+                    "incomplete_boundary_model"
+                ),
+                "missing_bit": bit,
+                "log_tail": (
+                    output.splitlines()[-40:]
+                ),
+            }
+
+        assignment[
+            str(bit)
+        ] = int(
+            value
+        )
+
+
+    return {
+        "status": "sat",
+        "requested_value": (
+            requested_value
+        ),
+        "boundary_assignment": (
+            assignment
+        ),
+    }
+
+
+def feasibility_class(
+    zero_status: str,
+    one_status: str,
+) -> str:
+
+    if (
+        zero_status == "sat"
+        and one_status == "sat"
+    ):
+        return "both_reachable"
+
+    if (
+        zero_status == "sat"
+        and one_status == "unsat"
+    ):
+        return "only_a_reachable"
+
+    if (
+        zero_status == "unsat"
+        and one_status == "sat"
+    ):
+        return "only_b_reachable"
+
+    if (
+        zero_status == "unsat"
+        and one_status == "unsat"
+    ):
+        return "inconsistent"
+
+    return "unresolved"
+
+
+def main() -> None:
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Solve Nebula mux-select "
+            "branch feasibility using the "
+            "exact pre-ABC Yosys model."
+        )
+    )
+
+    parser.add_argument(
+        "--mapped-json",
+        required=True,
+    )
+
+    parser.add_argument(
+        "--rtl-graph",
+        required=True,
+    )
+
+    parser.add_argument(
+        "--output",
+        required=True,
+    )
+
+    parser.add_argument(
+        "--yosys",
+        default=None,
+    )
+
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=20,
+    )
+
+    args = parser.parse_args()
+
+
+    mapped_path = Path(
+        args.mapped_json
+    ).resolve()
+
+    graph_path = Path(
+        args.rtl_graph
+    ).resolve()
+
+    output_path = Path(
+        args.output
+    ).resolve()
+
+
+    mapped = load_json(
+        mapped_path
+    )
+
+    graph = load_json(
+        graph_path
+    )
+
+
+    rtl_top = norm(
+        graph.get("rtl_top")
+        or graph.get("module")
+        or graph.get("design")
+    )
+
+    if not rtl_top:
+
+        raise RuntimeError(
+            "RTL graph has no top-module "
+            "identity."
+        )
+
+
+    checkpoint = Path(
+        str(
+            graph.get(
+                "source_checkpoint"
+            )
+            or ""
+        )
+    ).resolve()
+
+    if not checkpoint.exists():
+
+        raise FileNotFoundError(
+            "Canonical RTLIL checkpoint "
+            f"not found: {checkpoint}"
+        )
+
+
+    yosys = Path(
+        args.yosys
+        or str(
+            graph.get(
+                "yosys_executable"
+            )
+            or ""
+        )
+    ).resolve()
+
+    if not yosys.exists():
+
+        raise FileNotFoundError(
+            f"Yosys not found: {yosys}"
+        )
+
+
+    cones, occurrences = (
+        collect_select_cones(
+            mapped
+        )
+    )
+
+
+    with tempfile.TemporaryDirectory(
+        prefix="nebula_select_sat_"
+    ) as tmp:
+
+        work_dir = Path(
+            tmp
+        )
+
+        raw_path = (
+            work_dir
+            / "preabc.json"
+        )
+
+        regenerate_preabc_json(
+            checkpoint=checkpoint,
+            rtl_top=rtl_top,
+            yosys=yosys,
+            output=raw_path,
+        )
+
+        raw = load_json(
+            raw_path
+        )
+
+        top_name, _ = find_top(
+            raw,
+            rtl_top,
+        )
+
+
+        verify_graph_identity(
+            raw=raw,
+            rtl_top=rtl_top,
+            cones=cones,
+            occurrences=occurrences,
+        )
+
+
+        results = []
+
+
+        for bit in sorted(
+            cones
+        ):
+
+            cone = cones[
+                bit
+            ]
+
+            base = {
+                "select_bit": bit,
+                "select_kind": (
+                    cone.get("kind")
+                ),
+                "select_cone_status": (
+                    cone.get("status")
+                ),
+                "boundary_input_bits": (
+                    cone.get(
+                        "boundary_input_bits"
+                    )
+                    or []
+                ),
+                "boundary_register_bits": (
+                    cone.get(
+                        "boundary_register_bits"
+                    )
+                    or []
+                ),
+                "occurrences": (
+                    occurrences.get(
+                        bit
+                    )
+                    or []
+                ),
+            }
+
+
+            if (
+                cone.get("status")
+                != "resolved"
+                or cone.get(
+                    "unresolved_bits"
+                )
+            ):
+
+                results.append(
+                    {
+                        **base,
+                        "status": "unsupported",
+                        "reason": (
+                            "unresolved_select_cone"
+                        ),
+                        "zero": {
+                            "status": "unsupported"
+                        },
+                        "one": {
+                            "status": "unsupported"
+                        },
+                        "feasibility": (
+                            "unresolved"
+                        ),
+                    }
+                )
+
+                continue
+
+
+            register_bits = list(
+                cone.get(
+                    "boundary_register_bits"
+                )
+                or []
+            )
+
+            if register_bits:
+
+                results.append(
+                    {
+                        **base,
+                        "status": "unsupported",
+                        "reason": (
+                            "sequential_boundary_"
+                            "not_yet_supported"
+                        ),
+                        "zero": {
+                            "status": "unsupported"
+                        },
+                        "one": {
+                            "status": "unsupported"
+                        },
+                        "feasibility": (
+                            "unresolved"
+                        ),
+                    }
+                )
+
+                continue
+
+
+            boundary_bits = [
+                int(value)
+                for value in (
+                    cone.get(
+                        "boundary_input_bits"
+                    )
+                    or []
+                )
+            ]
+
+
+            # --------------------------------------------------
+            # Exact primary-input fast path.
+            #
+            # If the mux select itself is a top-level PI, there
+            # is no combinational feasibility problem to solve:
+            #
+            #   select=0 is feasible by assigning that PI to 0
+            #   select=1 is feasible by assigning that PI to 1
+            #
+            # Running SAT on the entire module here is both
+            # unnecessary and incorrect for sequential designs,
+            # because unrelated FFs may be imported into a
+            # combinational SAT problem.
+            #
+            # This is not a heuristic.  It follows directly from
+            # the already-verified pre-ABC graph identity and the
+            # unconstrained primary-input model used by this
+            # logical-feasibility stage.
+            # --------------------------------------------------
+
+            if (
+                cone.get("kind")
+                == "primary_input"
+            ):
+
+                if boundary_bits != [bit]:
+
+                    results.append(
+                        {
+                            **base,
+                            "status": "solver_error",
+                            "reason": (
+                                "invalid_primary_input_"
+                                "select_cone"
+                            ),
+                            "zero": {
+                                "status": "solver_error",
+                                "reason": (
+                                    "primary_input_boundary_"
+                                    "mismatch"
+                                ),
+                            },
+                            "one": {
+                                "status": "solver_error",
+                                "reason": (
+                                    "primary_input_boundary_"
+                                    "mismatch"
+                                ),
+                            },
+                            "feasibility": "unresolved",
+                        }
+                    )
+
+                    continue
+
+
+                zero = {
+                    "status": "sat",
+                    "requested_value": 0,
+                    "boundary_assignment": {
+                        str(bit): 0
+                    },
+                    "method": (
+                        "direct_primary_input_assignment"
+                    ),
+                }
+
+                one = {
+                    "status": "sat",
+                    "requested_value": 1,
+                    "boundary_assignment": {
+                        str(bit): 1
+                    },
+                    "method": (
+                        "direct_primary_input_assignment"
+                    ),
+                }
+
+            else:
+
+                zero = run_sat_query(
+                    base_raw=raw,
+                    top_name=top_name,
+                    rtl_top=rtl_top,
+                    yosys=yosys,
+                    select_bit=bit,
+                    boundary_bits=boundary_bits,
+                    requested_value=0,
+                    timeout_s=args.timeout,
+                    work_dir=work_dir,
+                )
+
+                one = run_sat_query(
+                    base_raw=raw,
+                    top_name=top_name,
+                    rtl_top=rtl_top,
+                    yosys=yosys,
+                    select_bit=bit,
+                    boundary_bits=boundary_bits,
+                    requested_value=1,
+                    timeout_s=args.timeout,
+                    work_dir=work_dir,
+                )
+
+
+            feasibility = (
+                feasibility_class(
+                    zero["status"],
+                    one["status"],
+                )
+            )
+
+
+            status = (
+                "resolved"
+                if zero["status"]
+                in ("sat", "unsat")
+                and one["status"]
+                in ("sat", "unsat")
+                else "solver_error"
+            )
+
+
+            results.append(
+                {
+                    **base,
+                    "status": status,
+                    "zero": zero,
+                    "one": one,
+                    "feasibility": (
+                        feasibility
+                    ),
+                }
+            )
+
+
+    resolved_count = sum(
+        1
+        for item in results
+        if item.get("status")
+        == "resolved"
+    )
+
+    unsupported_count = sum(
+        1
+        for item in results
+        if item.get("status")
+        == "unsupported"
+    )
+
+    error_count = sum(
+        1
+        for item in results
+        if item.get("status")
+        == "solver_error"
+    )
+
+    both_reachable_count = sum(
+        1
+        for item in results
+        if item.get("feasibility")
+        == "both_reachable"
+    )
+
+
+    document = {
+        "schema": SCHEMA,
+        "design": graph.get("design"),
+        "platform": graph.get("platform"),
+        "flow_variant": (
+            graph.get("flow_variant")
+        ),
+        "rtl_top": rtl_top,
+        "source_checkpoint": (
+            str(checkpoint)
+        ),
+        "yosys_executable": (
+            str(yosys)
+        ),
+        "model_recipe": [
+            "read_rtlil",
+            "hierarchy -check -top",
+            "proc",
+            "flatten",
+            "opt_clean",
+        ],
+        "graph_identity_verified": True,
+        "source_mapped_json": str(mapped_path),
+        "source_mapped_sha256": sha256_file(mapped_path),
+        "source_rtl_graph": str(graph_path),
+        "source_rtl_graph_sha256": sha256_file(graph_path),
+        "results": results,
+        "summary": {
+            "select_count": len(
+                results
+            ),
+            "resolved_count": (
+                resolved_count
+            ),
+            "both_reachable_count": (
+                both_reachable_count
+            ),
+            "unsupported_count": (
+                unsupported_count
+            ),
+            "solver_error_count": (
+                error_count
+            ),
+        },
+    }
+
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    output_path.write_text(
+        json.dumps(
+            document,
+            indent=2,
+        )
+    )
+
+
+    print()
+    print("=" * 72)
+    print("SELECT SAT")
+    print("=" * 72)
+
+    print(
+        f"Design           : "
+        f"{graph.get('design')}"
+    )
+
+    print(
+        f"Selectors        : "
+        f"{len(results)}"
+    )
+
+    print(
+        f"Resolved         : "
+        f"{resolved_count}"
+    )
+
+    print(
+        f"Both reachable   : "
+        f"{both_reachable_count}"
+    )
+
+    print(
+        f"Unsupported      : "
+        f"{unsupported_count}"
+    )
+
+    print(
+        f"Solver errors    : "
+        f"{error_count}"
+    )
+
+
+    for item in results:
+
+        print(
+            f"bit={item['select_bit']:<4} "
+            f"S=0:{item['zero']['status']:<12} "
+            f"S=1:{item['one']['status']:<12} "
+            f"{item['feasibility']}"
+        )
+
+
+    print()
+    print(
+        f"SAT JSON: {output_path}"
+    )
+
+    print("=" * 72)
+
+
+    if error_count:
+
+        raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,41 @@
+{
+  "id": "bool.comparator_restructure",
+  "name": "Restructure relational comparison logic",
+  "family": "boolean_restructuring",
+  "applies_when": {
+    "class": [
+      "boolean",
+      "comparison"
+    ],
+    "pattern_in": [
+      "relational_comparator"
+    ],
+    "requires_flags": [
+      "allow_boolean_restructuring"
+    ]
+  },
+  "latency_effect": "preserves",
+  "sec_recipe": "equiv_make+equiv_induct",
+  "template": "Rewrite comparison expressions into an equivalent form that reduces duplicated relational logic or critical Boolean depth.",
+  "example": {
+    "before": "assign y = (a > b) || (a == b);",
+    "after": "assign y = (a >= b);"
+  },
+  "guardrails": [
+    "Preserve signedness, widths, equality behavior, and X-sensitive semantics.",
+    "Do not alter ports, parameters, state, or latency.",
+    "Change only the source-attributed comparison cone."
+  ],
+  "version": "1.0.0",
+  "target_operator_roles": [
+    "$eq",
+    "$eqx",
+    "$ne",
+    "$nex",
+    "$lt",
+    "$le",
+    "$gt",
+    "$ge"
+  ],
+  "expected_equivalence_class": "combinational_same_latency"
+}

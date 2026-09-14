@@ -1,0 +1,42 @@
+{
+  "id": "arith.csla_split",
+  "name": "Carry-select adder split",
+  "family": "arithmetic_restructuring",
+  "applies_when": {
+    "class": [
+      "arithmetic"
+    ],
+    "pattern_in": [
+      "adder",
+      "adder_followed_by_mux"
+    ],
+    "requires_flags": [
+      "allow_arithmetic_restructuring"
+    ]
+  },
+  "latency_effect": "preserves",
+  "sec_recipe": "equiv_make+equiv_induct",
+  "template": "Split a wide ripple addition into fixed-width blocks, precompute each higher block for carry-in 0 and 1, and select on the incoming carry. Cuts the carry-chain depth from N bits to blocksize + a mux cascade. Same result, same latency.",
+  "example": {
+    "before": "wire [31:0] sum = a + b;",
+    "after": "wire [8:0] s0 = a[7:0]+b[7:0]; wire c0=s0[8]; wire [8:0] s1_0=a[15:8]+b[15:8]; wire [8:0] s1_1=a[15:8]+b[15:8]+1'b1; assign sum[7:0]=s0[7:0]; assign sum[15:8]=c0?s1_1[7:0]:s1_0[7:0]; /* ...repeat for blocks 2,3... */"
+  },
+  "guardrails": [
+    "Keep block boundaries aligned to the operand width; cover every bit exactly once.",
+    "Do not add registers or change latency.",
+    "Do not alter the module ports or the clocked always block."
+  ],
+  "version": "1.0.0",
+  "arithmetic_correctness_requirements": {
+    "exact_fixed_width_equivalence": "The rewritten arithmetic must produce exactly the same fixed-width result as the original expression for every legal operand value.",
+    "carry_out_preservation": "For any N-bit sub-addition whose carry-out is consumed by another stage, compute that sub-addition with an intermediate width of at least N+1 bits and take carry-out from bit N. Never use bit N-1 of a truncated N-bit sum as carry-out.",
+    "carry_select_branch_width": "For carry-select alternatives, both carry-in=0 and carry-in=1 computations must preserve the full N+1-bit intermediate whenever their carry-out is propagated. Select both the N-bit sum and the true carry-out according to the actual incoming carry.",
+    "intermediate_width_preservation": "Do not truncate an arithmetic intermediate before any result bit or carry bit that is still needed downstream has been extracted.",
+    "signedness_preservation": "Preserve the original signed/unsigned interpretation, operand extension behavior, result width, and modular overflow semantics.",
+    "split_width_is_not_fixed": "The implementation may choose any legal split width or number of blocks. Correctness requirements are expressed in terms of each block width N and must hold for every chosen block."
+  },
+  "target_operator_roles": [
+    "$add"
+  ],
+  "expected_equivalence_class": "combinational_same_latency"
+}

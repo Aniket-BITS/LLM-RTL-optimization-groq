@@ -1,0 +1,4469 @@
+#!/usr/bin/env python3
+# new! new! new! new!
+
+"""Bit-precise pre-ABC timing-path to RTL mapper."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+from collections import Counter, defaultdict, deque
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+
+try:
+    from build_rtl_graph import build_rtl_graph, find_canonical_checkpoint
+    from narrow_reconvergence import find_final_mux, resolve_branch, select_timing_path
+except ImportError:
+    from timing_automation.build_rtl_graph import build_rtl_graph, find_canonical_checkpoint
+    from timing_automation.narrow_reconvergence import find_final_mux, resolve_branch, select_timing_path
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_FLOW_DIR = SCRIPT_DIR.parent
+
+DFF_SUFFIX_RE = re.compile(r"\$_DFF_[A-Za-z0-9_]+_$")
+PIN_SUFFIX_RE = re.compile(r"/(?:Q|QN|D|CK)$")
+SRC_RE = re.compile(
+    r"^(?P<file>.*):(?P<start>\d+)"
+    r"(?:\.(?P<start_col>\d+))?"
+    r"(?:-(?P<end>\d+)(?:\.(?P<end_col>\d+))?)?$"
+)
+
+BITWISE_BINARY = {"$and", "$or", "$xor", "$xnor"}
+BITWISE_UNARY = {"$not", "$pos"}
+ARITH_CARRY = {"$add", "$sub"}
+
+GLOBAL_OPS = {
+    "$eq",
+    "$ne",
+    "$eqx",
+    "$nex",
+    "$lt",
+    "$le",
+    "$gt",
+    "$ge",
+    "$reduce_and",
+    "$reduce_or",
+    "$reduce_xor",
+    "$reduce_xnor",
+    "$reduce_bool",
+    "$logic_and",
+    "$logic_or",
+    "$logic_not",
+    "$shl",
+    "$shr",
+    "$sshl",
+    "$sshr",
+    "$shift",
+    "$shiftx",
+}
+
+
+class SourceHashCache:
+    """Race-aware mapping-time SHA-256 cache for resolved RTL sources."""
+
+    def __init__(self) -> None:
+        self._cache: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _signature(path: Path) -> Tuple[int, int]:
+        st = path.stat()
+        return int(st.st_size), int(st.st_mtime_ns)
+
+    def describe(self, path: Path) -> Dict[str, Any]:
+        resolved = path.resolve()
+        key = str(resolved)
+        before = self._signature(resolved)
+
+        cached = self._cache.get(key)
+        if cached is not None:
+            cached_sig = (int(cached["size_bytes"]), int(cached["mtime_ns"]))
+            if before != cached_sig:
+                raise RuntimeError(
+                    "RTL source changed during map_to_rtl execution: "
+                    f"{resolved}"
+                )
+            return dict(cached)
+
+        h = hashlib.sha256()
+        with resolved.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+
+        after = self._signature(resolved)
+        if after != before:
+            raise RuntimeError(
+                "RTL source changed while being hashed: "
+                f"{resolved}"
+            )
+
+        record = {
+            "path": key,
+            "hash_algorithm": "sha256",
+            "sha256": h.hexdigest(),
+            "size_bytes": before[0],
+            "mtime_ns": before[1],
+            "provenance_scope": "mapping_time_source_file",
+        }
+        self._cache[key] = record
+        return dict(record)
+
+
+def source_integrity_manifest(
+    cells: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Collect exact user-RTL files referenced by one mapped RTL cone."""
+
+    files: Dict[str, Dict[str, Any]] = {}
+    errors: List[str] = []
+
+    for cell in cells:
+        for source in cell.get("sources", []):
+            if source.get("source_type") != "user_rtl":
+                continue
+
+            integrity = source.get("source_integrity")
+            resolved = source.get("resolved_file")
+
+            if not isinstance(integrity, dict):
+                errors.append(
+                    "Missing SHA-256 for mapped user RTL source: "
+                    f"{resolved or source.get('file')}"
+                )
+                continue
+
+            file_path = str(integrity.get("path") or resolved or "")
+            sha = integrity.get("sha256")
+
+            if not file_path or not sha:
+                errors.append(
+                    "Incomplete SHA-256 record for mapped user RTL source: "
+                    f"{resolved or source.get('file')}"
+                )
+                continue
+
+            prior = files.get(file_path)
+            if prior is not None and prior.get("sha256") != sha:
+                errors.append(
+                    "Conflicting SHA-256 values for the same RTL file: "
+                    f"{file_path}"
+                )
+                continue
+
+            files[file_path] = {
+                "path": file_path,
+                "hash_algorithm": "sha256",
+                "sha256": sha,
+                "size_bytes": integrity.get("size_bytes"),
+                "mtime_ns": integrity.get("mtime_ns"),
+                "provenance_scope": "mapping_time_source_file",
+            }
+
+    status = (
+        "complete"
+        if files and not errors
+        else "not_applicable"
+        if not files and not errors
+        else "error"
+    )
+
+    return {
+        "status": status,
+        "hash_algorithm": "sha256",
+        "provenance_scope": "mapping_time_source_file",
+        "files": [files[k] for k in sorted(files)],
+        "errors": errors,
+    }
+
+
+def merge_run_source_integrity(
+    mapped_paths: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    files: Dict[str, Dict[str, Any]] = {}
+    errors: List[str] = []
+
+    for path in mapped_paths:
+        mapping = path.get("rtl_mapping") or {}
+        manifest = mapping.get("source_integrity") or {}
+
+        errors.extend(str(e) for e in manifest.get("errors", []))
+
+        for item in manifest.get("files", []):
+            file_path = str(item.get("path") or "")
+            sha = item.get("sha256")
+            if not file_path or not sha:
+                errors.append(f"Incomplete path-level source-integrity item: {item}")
+                continue
+
+            prior = files.get(file_path)
+            if prior is not None and prior.get("sha256") != sha:
+                errors.append(
+                    "Conflicting path-level SHA-256 values for RTL file: "
+                    f"{file_path}"
+                )
+                continue
+
+            files[file_path] = dict(item)
+
+    status = (
+        "complete"
+        if files and not errors
+        else "not_applicable"
+        if not files and not errors
+        else "error"
+    )
+
+    return {
+        "status": status,
+        "hash_algorithm": "sha256",
+        "provenance_scope": "mapping_time_source_file",
+        "files": [files[k] for k in sorted(files)],
+        "errors": sorted(set(errors)),
+    }
+
+
+def norm(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+
+    text = str(value).strip()
+
+    if text.startswith("\\"):
+        text = text[1:]
+
+    return text or None
+
+
+def reg_signal(value: Any) -> Optional[str]:
+    text = norm(value)
+
+    if not text:
+        return None
+
+    text = PIN_SUFFIX_RE.sub("", text)
+    return DFF_SUFFIX_RE.sub("", text)
+
+
+def bit_id(value: Any) -> Optional[int]:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return int(value)
+
+    return None
+
+
+def ints(bits: Sequence[Any]) -> List[int]:
+    return [
+        int(value)
+        for value in bits
+        if bit_id(value) is not None
+    ]
+
+
+def conns(cell: Dict[str, Any]) -> Dict[str, List[Any]]:
+    return cell.get("connections") or {}
+
+
+def dirs(cell: Dict[str, Any]) -> Dict[str, str]:
+    return cell.get("port_directions") or {}
+
+
+def find_port(
+    cell: Dict[str, Any],
+    *names: str,
+) -> Optional[str]:
+
+    ports = {
+        str(port).lstrip("\\").upper(): port
+        for port in conns(cell)
+    }
+
+    for name in names:
+        if name.upper() in ports:
+            return ports[name.upper()]
+
+    return None
+
+
+def pbits(
+    cell: Dict[str, Any],
+    *names: str,
+) -> List[Any]:
+
+    port = find_port(cell, *names)
+
+    if port is None:
+        return []
+
+    return list(
+        conns(cell).get(port, [])
+    )
+
+
+def at(
+    bits: Sequence[Any],
+    index: int,
+) -> Optional[int]:
+
+    if index < 0 or index >= len(bits):
+        return None
+
+    return bit_id(bits[index])
+
+
+def positions(
+    bits: Sequence[Any],
+    target: int,
+) -> List[int]:
+
+    return [
+        index
+        for index, value in enumerate(bits)
+        if bit_id(value) == target
+    ]
+
+
+def all_inputs(
+    cell: Dict[str, Any],
+) -> Set[int]:
+
+    result: Set[int] = set()
+
+    for port, bits in conns(cell).items():
+
+        if dirs(cell).get(port) in (
+            "input",
+            "inout",
+        ):
+            result.update(
+                ints(bits)
+            )
+
+    if not result:
+        result.update(
+            ints(
+                cell.get(
+                    "input_bits",
+                    [],
+                )
+            )
+        )
+
+    return result
+
+
+def all_outputs(
+    cell: Dict[str, Any],
+) -> Set[int]:
+
+    result: Set[int] = set()
+
+    for port, bits in conns(cell).items():
+
+        if dirs(cell).get(port) in (
+            "output",
+            "inout",
+        ):
+            result.update(
+                ints(bits)
+            )
+
+    if not result:
+        result.update(
+            ints(
+                cell.get(
+                    "output_bits",
+                    [],
+                )
+            )
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Bit dependency semantics
+# ---------------------------------------------------------------------------
+
+def outputs_from_input(
+    cell: Dict[str, Any],
+    input_bit: int,
+) -> Set[int]:
+
+    """
+    Return output bits that may depend on input_bit.
+    """
+
+    typ = str(
+        cell.get("type") or ""
+    )
+
+    a = pbits(cell, "A")
+    b = pbits(cell, "B")
+    y = pbits(cell, "Y")
+
+    # -------------------------------------------------------
+    # Bitwise:
+    #
+    # A[i] -> Y[i]
+    # B[i] -> Y[i]
+    # -------------------------------------------------------
+
+    if typ in BITWISE_BINARY:
+
+        result: Set[int] = set()
+
+        for data in (a, b):
+
+            for index in positions(
+                data,
+                input_bit,
+            ):
+
+                out = at(
+                    y,
+                    index,
+                )
+
+                if out is not None:
+                    result.add(out)
+
+        return result
+
+
+    # -------------------------------------------------------
+    # Unary:
+    #
+    # A[i] -> Y[i]
+    # -------------------------------------------------------
+
+    if typ in BITWISE_UNARY:
+
+        result: Set[int] = set()
+
+        for index in positions(
+            a,
+            input_bit,
+        ):
+
+            out = at(
+                y,
+                index,
+            )
+
+            if out is not None:
+                result.add(out)
+
+        return result
+
+
+    # -------------------------------------------------------
+    # MUX:
+    #
+    # A[i] -> Y[i]
+    # B[i] -> Y[i]
+    # S    -> every Y bit
+    # -------------------------------------------------------
+
+    if typ == "$mux":
+
+        result: Set[int] = set()
+
+        for data in (a, b):
+
+            for index in positions(
+                data,
+                input_bit,
+            ):
+
+                out = at(
+                    y,
+                    index,
+                )
+
+                if out is not None:
+                    result.add(out)
+
+        s = pbits(
+            cell,
+            "S",
+        )
+
+        if input_bit in ints(s):
+            result.update(
+                ints(y)
+            )
+
+        return result
+
+
+    # -------------------------------------------------------
+    # ADD / SUB:
+    #
+    # input bit i can affect:
+    #
+    # Y[i], Y[i+1], ..., Y[MSB]
+    #
+    # because of carry / borrow propagation.
+    # -------------------------------------------------------
+
+    if typ in ARITH_CARRY:
+
+        result: Set[int] = set()
+
+        for data in (a, b):
+
+            for index in positions(
+                data,
+                input_bit,
+            ):
+
+                for out_index in range(
+                    index,
+                    len(y),
+                ):
+
+                    out = at(
+                        y,
+                        out_index,
+                    )
+
+                    if out is not None:
+                        result.add(out)
+
+        return result
+
+
+    # -------------------------------------------------------
+    # MUL:
+    #
+    # Conservative approximation:
+    # input bit i cannot affect result bits below i.
+    # -------------------------------------------------------
+
+    if typ == "$mul":
+
+        result: Set[int] = set()
+
+        for data in (a, b):
+
+            for index in positions(
+                data,
+                input_bit,
+            ):
+
+                for out_index in range(
+                    index,
+                    len(y),
+                ):
+
+                    out = at(
+                        y,
+                        out_index,
+                    )
+
+                    if out is not None:
+                        result.add(out)
+
+        return result
+
+
+    # -------------------------------------------------------
+    # Compare/reduce/shift etc.
+    #
+    # Conservative global dependency.
+    # -------------------------------------------------------
+
+    if typ in GLOBAL_OPS:
+        return all_outputs(cell)
+
+
+    # -------------------------------------------------------
+    # Unknown operator:
+    #
+    # Never delete a possibly valid path.
+    # -------------------------------------------------------
+
+    return all_outputs(cell)
+
+
+def inputs_for_output(
+    cell: Dict[str, Any],
+    output_bit: int,
+) -> Set[int]:
+
+    """
+    Return input bits that may affect output_bit.
+    """
+
+    typ = str(
+        cell.get("type") or ""
+    )
+
+    a = pbits(cell, "A")
+    b = pbits(cell, "B")
+    y = pbits(cell, "Y")
+
+    if y and output_bit not in ints(y):
+        return set()
+
+
+    # -------------------------------------------------------
+    # Bitwise:
+    #
+    # Y[i] depends on A[i], B[i]
+    # -------------------------------------------------------
+
+    if typ in BITWISE_BINARY:
+
+        result: Set[int] = set()
+
+        for index in positions(
+            y,
+            output_bit,
+        ):
+
+            for data in (a, b):
+
+                src = at(
+                    data,
+                    index,
+                )
+
+                if src is not None:
+                    result.add(src)
+
+        return result
+
+
+    # -------------------------------------------------------
+    # Unary:
+    # -------------------------------------------------------
+
+    if typ in BITWISE_UNARY:
+
+        result: Set[int] = set()
+
+        for index in positions(
+            y,
+            output_bit,
+        ):
+
+            src = at(
+                a,
+                index,
+            )
+
+            if src is not None:
+                result.add(src)
+
+        return result
+
+
+    # -------------------------------------------------------
+    # MUX:
+    #
+    # Y[i] depends on A[i], B[i], S
+    # -------------------------------------------------------
+
+    if typ == "$mux":
+
+        result: Set[int] = set()
+
+        for index in positions(
+            y,
+            output_bit,
+        ):
+
+            for data in (a, b):
+
+                src = at(
+                    data,
+                    index,
+                )
+
+                if src is not None:
+                    result.add(src)
+
+        result.update(
+            ints(
+                pbits(
+                    cell,
+                    "S",
+                )
+            )
+        )
+
+        return result
+
+
+    # -------------------------------------------------------
+    # ADD / SUB:
+    #
+    # Y[k] depends on inputs 0..k.
+    # -------------------------------------------------------
+
+    if typ in ARITH_CARRY:
+
+        result: Set[int] = set()
+
+        for out_index in positions(
+            y,
+            output_bit,
+        ):
+
+            for data in (a, b):
+
+                upper = min(
+                    out_index + 1,
+                    len(data),
+                )
+
+                for src_index in range(
+                    upper
+                ):
+
+                    src = at(
+                        data,
+                        src_index,
+                    )
+
+                    if src is not None:
+                        result.add(src)
+
+        return result
+
+
+    # -------------------------------------------------------
+    # MUL
+    # -------------------------------------------------------
+
+    if typ == "$mul":
+
+        result: Set[int] = set()
+
+        for out_index in positions(
+            y,
+            output_bit,
+        ):
+
+            for data in (a, b):
+
+                upper = min(
+                    out_index + 1,
+                    len(data),
+                )
+
+                for src_index in range(
+                    upper
+                ):
+
+                    src = at(
+                        data,
+                        src_index,
+                    )
+
+                    if src is not None:
+                        result.add(src)
+
+        return result
+
+
+    if typ in GLOBAL_OPS:
+        return all_inputs(cell)
+
+
+    return all_inputs(cell)
+
+
+# ---------------------------------------------------------------------------
+# Signal lookup
+# ---------------------------------------------------------------------------
+
+def aliases(
+    signal: Optional[str],
+    design: str,
+) -> List[str]:
+
+    signal = reg_signal(signal)
+
+    if not signal:
+        return []
+
+    result = {
+        signal,
+        signal.replace(
+            "/",
+            ".",
+        ),
+        signal.replace(
+            ".",
+            "/",
+        ),
+    }
+
+    for sep in (
+        "/",
+        ".",
+    ):
+
+        prefix = (
+            f"{design}{sep}"
+        )
+
+        if signal.startswith(
+            prefix
+        ):
+            result.add(
+                signal[
+                    len(prefix):
+                ]
+            )
+
+    return sorted(result)
+
+
+class RTLGraphIndex:
+
+    def __init__(
+        self,
+        graph: Dict[str, Any],
+        design: str,
+    ):
+
+        self.graph = graph
+        self.design = design
+
+        self.cells: Dict[
+            str,
+            Dict[str, Any],
+        ] = (
+            graph.get("cells")
+            or {}
+        )
+
+        self.signal_bits: Dict[
+            str,
+            List[Any],
+        ] = (
+            graph.get("signal_bits")
+            or {}
+        )
+
+        self.bit_names: Dict[
+            str,
+            List[str],
+        ] = (
+            graph.get("bit_names")
+            or {}
+        )
+
+        self.ports: Dict[
+            str,
+            Dict[str, Any],
+        ] = (
+            graph.get("ports")
+            or {}
+        )
+
+        self.primary_input_bits: Set[int] = set()
+        self.primary_output_bits: Set[int] = set()
+
+        for port in self.ports.values():
+
+            direction = str(
+                port.get("direction")
+                or ""
+            ).lower()
+
+            for raw in (
+                port.get("bits")
+                or []
+            ):
+
+                value = bit_id(raw)
+
+                if value is None:
+                    continue
+
+                if direction in (
+                    "input",
+                    "inout",
+                ):
+                    self.primary_input_bits.add(
+                        value
+                    )
+
+                if direction in (
+                    "output",
+                    "inout",
+                ):
+                    self.primary_output_bits.add(
+                        value
+                    )
+
+        self.consumers: Dict[
+            int,
+            Set[str],
+        ] = defaultdict(set)
+
+        self.drivers: Dict[
+            int,
+            Set[str],
+        ] = defaultdict(set)
+
+        self.q_to_seq: Dict[
+            int,
+            List[Tuple[str, int]],
+        ] = defaultdict(list)
+
+
+        for name, cell in self.cells.items():
+
+            # Sequential cells are boundaries.
+            if cell.get(
+                "sequential"
+            ):
+
+                q = find_port(
+                    cell,
+                    "Q",
+                )
+
+                if q:
+
+                    q_bits = conns(
+                        cell
+                    ).get(
+                        q,
+                        [],
+                    )
+
+                    for index, raw in enumerate(
+                        q_bits
+                    ):
+
+                        value = bit_id(
+                            raw
+                        )
+
+                        if value is not None:
+
+                            self.q_to_seq[
+                                value
+                            ].append(
+                                (
+                                    name,
+                                    index,
+                                )
+                            )
+
+                continue
+
+
+            for raw in cell.get(
+                "input_bits",
+                [],
+            ):
+
+                value = bit_id(
+                    raw
+                )
+
+                if value is not None:
+
+                    self.consumers[
+                        value
+                    ].add(
+                        name
+                    )
+
+
+            for raw in cell.get(
+                "output_bits",
+                [],
+            ):
+
+                value = bit_id(
+                    raw
+                )
+
+                if value is not None:
+
+                    self.drivers[
+                        value
+                    ].add(
+                        name
+                    )
+
+
+    def is_primary_input(
+        self,
+        bit: int,
+    ) -> bool:
+
+        return (
+            int(bit)
+            in self.primary_input_bits
+        )
+
+
+    def is_primary_output(
+        self,
+        bit: int,
+    ) -> bool:
+
+        return (
+            int(bit)
+            in self.primary_output_bits
+        )
+
+
+    def resolve(
+        self,
+        signal: Optional[str],
+    ) -> Dict[str, Any]:
+
+        matches: List[
+            Tuple[str, int]
+        ] = []
+
+        for name in aliases(
+            signal,
+            self.design,
+        ):
+
+            bits = self.signal_bits.get(
+                name
+            )
+
+            if (
+                bits is None
+                or len(bits) != 1
+            ):
+                continue
+
+            value = bit_id(
+                bits[0]
+            )
+
+            if value is not None:
+
+                matches.append(
+                    (
+                        name,
+                        value,
+                    )
+                )
+
+
+        unique = sorted(
+            {
+                value
+                for _, value
+                in matches
+            }
+        )
+
+
+        if len(unique) == 1:
+
+            value = unique[0]
+
+            return {
+                "status": "resolved",
+                "requested": reg_signal(
+                    signal
+                ),
+                "matched_names": sorted(
+                    name
+                    for name, bit
+                    in matches
+                    if bit == value
+                ),
+                "bit": value,
+                "bit_names": (
+                    self.bit_names.get(
+                        str(value),
+                        [],
+                    )
+                ),
+            }
+
+
+        if len(unique) > 1:
+
+            return {
+                "status": "ambiguous",
+                "requested": reg_signal(
+                    signal
+                ),
+                "candidates": [
+                    {
+                        "name": name,
+                        "bit": value,
+                    }
+                    for name, value
+                    in matches
+                ],
+            }
+
+
+        return {
+            "status": "not_found",
+            "requested": reg_signal(
+                signal
+            ),
+        }
+
+
+    def capture_d(
+        self,
+        q_bit: int,
+    ) -> Dict[str, Any]:
+
+        candidates = []
+
+
+        for name, q_index in self.q_to_seq.get(
+            q_bit,
+            [],
+        ):
+
+            cell = self.cells[
+                name
+            ]
+
+            q = find_port(
+                cell,
+                "Q",
+            )
+
+            d = find_port(
+                cell,
+                "D",
+                "AD",
+            )
+
+            if not q or not d:
+                continue
+
+
+            q_bits = conns(
+                cell
+            ).get(
+                q,
+                [],
+            )
+
+            d_bits = conns(
+                cell
+            ).get(
+                d,
+                [],
+            )
+
+
+            if (
+                q_index >= len(q_bits)
+                or q_index >= len(d_bits)
+            ):
+                continue
+
+
+            d_bit = bit_id(
+                d_bits[
+                    q_index
+                ]
+            )
+
+            if d_bit is None:
+                continue
+
+
+            candidates.append(
+                {
+                    "cell": name,
+                    "cell_type": cell.get(
+                        "type"
+                    ),
+                    "q_bit": q_bit,
+                    "d_bit": d_bit,
+                    "src": cell.get(
+                        "src",
+                        [],
+                    ),
+                }
+            )
+
+
+        unique = {
+            (
+                item["cell"],
+                item["d_bit"],
+            ): item
+
+            for item in candidates
+        }
+
+        candidates = list(
+            unique.values()
+        )
+
+
+        if len(candidates) == 1:
+
+            return {
+                "status": "resolved",
+                **candidates[0],
+            }
+
+
+        if len(candidates) > 1:
+
+            return {
+                "status": "ambiguous",
+                "candidates": candidates,
+            }
+
+
+        return {
+            "status": "not_found",
+            "q_bit": q_bit,
+        }
+
+
+    def forward(
+        self,
+        start_bit: int,
+    ) -> Tuple[
+        Set[str],
+        Set[int],
+    ]:
+
+        cells: Set[str] = set()
+        bits: Set[int] = {
+            start_bit
+        }
+
+        queue: deque[int] = deque(
+            [
+                start_bit
+            ]
+        )
+
+
+        while queue:
+
+            current = queue.popleft()
+
+
+            for name in self.consumers.get(
+                current,
+                set(),
+            ):
+
+                next_bits = outputs_from_input(
+                    self.cells[
+                        name
+                    ],
+                    current,
+                )
+
+                if not next_bits:
+                    continue
+
+                cells.add(
+                    name
+                )
+
+
+                for nxt in next_bits:
+
+                    if nxt not in bits:
+
+                        bits.add(
+                            nxt
+                        )
+
+                        queue.append(
+                            nxt
+                        )
+
+
+        return (
+            cells,
+            bits,
+        )
+
+
+    def backward(
+        self,
+        end_bit: int,
+    ) -> Tuple[
+        Set[str],
+        Set[int],
+    ]:
+
+        cells: Set[str] = set()
+        bits: Set[int] = {
+            end_bit
+        }
+
+        queue: deque[int] = deque(
+            [
+                end_bit
+            ]
+        )
+
+
+        while queue:
+
+            current = queue.popleft()
+
+
+            for name in self.drivers.get(
+                current,
+                set(),
+            ):
+
+                prev_bits = inputs_for_output(
+                    self.cells[
+                        name
+                    ],
+                    current,
+                )
+
+                if not prev_bits:
+                    continue
+
+                cells.add(
+                    name
+                )
+
+
+                for prev in prev_bits:
+
+                    if prev not in bits:
+
+                        bits.add(
+                            prev
+                        )
+
+                        queue.append(
+                            prev
+                        )
+
+
+        return (
+            cells,
+            bits,
+        )
+
+
+    def precise_cells(
+        self,
+        forward_cells: Set[str],
+        backward_cells: Set[str],
+        forward_bits: Set[int],
+        backward_bits: Set[int],
+    ) -> Set[str]:
+
+        result: Set[str] = set()
+
+
+        for name in (
+            forward_cells
+            & backward_cells
+        ):
+
+            cell = self.cells[
+                name
+            ]
+
+
+            for input_bit in all_inputs(
+                cell
+            ):
+
+                if input_bit not in forward_bits:
+                    continue
+
+
+                possible_outputs = outputs_from_input(
+                    cell,
+                    input_bit,
+                )
+
+
+                if (
+                    possible_outputs
+                    & backward_bits
+                ):
+
+                    result.add(
+                        name
+                    )
+
+                    break
+
+
+        return result
+
+
+    def analyze_select_cone(
+        self,
+        root_bit: int,
+    ) -> Dict[str, Any]:
+
+        """
+        Analyze the combinational dependency cone of one mux-select bit.
+
+        The walk stops at trusted timing boundaries:
+
+          * top-level primary inputs
+          * sequential Q outputs
+
+        It fails closed on:
+
+          * missing drivers
+          * multiple combinational drivers
+          * combinational cycles
+          * driver outputs whose upstream dependency cannot be derived
+
+        Cell/operator counts are derived from unique cell identities so
+        reconvergent DAG structure is never double-counted.
+        """
+
+        memo: Dict[
+            int,
+            Dict[str, Any],
+        ] = {}
+
+        visiting: Set[int] = set()
+
+
+        def walk(
+            bit: int,
+        ) -> Dict[str, Any]:
+
+            if bit in memo:
+
+                cached = memo[bit]
+
+                return {
+                    "status": cached["status"],
+                    "boundary_input_bits": set(
+                        cached["boundary_input_bits"]
+                    ),
+                    "boundary_register_bits": set(
+                        cached["boundary_register_bits"]
+                    ),
+                    "cells": set(
+                        cached["cells"]
+                    ),
+                    "unresolved_bits": set(
+                        cached["unresolved_bits"]
+                    ),
+                    "max_comb_depth": int(
+                        cached["max_comb_depth"]
+                    ),
+                }
+
+
+            # --------------------------------------------------
+            # Primary-input boundary.
+            # --------------------------------------------------
+
+            if self.is_primary_input(
+                bit
+            ):
+
+                result = {
+                    "status": "resolved",
+                    "boundary_input_bits": {
+                        bit
+                    },
+                    "boundary_register_bits": set(),
+                    "cells": set(),
+                    "unresolved_bits": set(),
+                    "max_comb_depth": 0,
+                }
+
+                memo[bit] = result
+
+                return walk(bit)
+
+
+            # --------------------------------------------------
+            # Sequential-Q boundary.
+            # --------------------------------------------------
+
+            if self.q_to_seq.get(
+                bit
+            ):
+
+                result = {
+                    "status": "resolved",
+                    "boundary_input_bits": set(),
+                    "boundary_register_bits": {
+                        bit
+                    },
+                    "cells": set(),
+                    "unresolved_bits": set(),
+                    "max_comb_depth": 0,
+                }
+
+                memo[bit] = result
+
+                return walk(bit)
+
+
+            # --------------------------------------------------
+            # Combinational-cycle protection.
+            # --------------------------------------------------
+
+            if bit in visiting:
+
+                return {
+                    "status": "unresolved",
+                    "boundary_input_bits": set(),
+                    "boundary_register_bits": set(),
+                    "cells": set(),
+                    "unresolved_bits": {
+                        bit
+                    },
+                    "max_comb_depth": 0,
+                }
+
+
+            drivers = sorted(
+                self.drivers.get(
+                    bit,
+                    set(),
+                )
+            )
+
+
+            # --------------------------------------------------
+            # Zero or multiple drivers are not trustworthy.
+            # --------------------------------------------------
+
+            if len(
+                drivers
+            ) != 1:
+
+                result = {
+                    "status": "unresolved",
+                    "boundary_input_bits": set(),
+                    "boundary_register_bits": set(),
+                    "cells": set(),
+                    "unresolved_bits": {
+                        bit
+                    },
+                    "max_comb_depth": 0,
+                }
+
+                memo[bit] = result
+
+                return walk(bit)
+
+
+            driver = drivers[0]
+
+            cell = self.cells[
+                driver
+            ]
+
+
+            upstream = sorted(
+                inputs_for_output(
+                    cell,
+                    bit,
+                )
+            )
+
+
+            if not upstream:
+
+                result = {
+                    "status": "unresolved",
+                    "boundary_input_bits": set(),
+                    "boundary_register_bits": set(),
+                    "cells": {
+                        driver
+                    },
+                    "unresolved_bits": {
+                        bit
+                    },
+                    "max_comb_depth": 1,
+                }
+
+                memo[bit] = result
+
+                return walk(bit)
+
+
+            visiting.add(
+                bit
+            )
+
+
+            boundary_inputs: Set[int] = set()
+
+            boundary_registers: Set[int] = set()
+
+            cells: Set[str] = {
+                driver
+            }
+
+            unresolved: Set[int] = set()
+
+            child_depths: List[int] = []
+
+
+            for source_bit in upstream:
+
+                child = walk(
+                    source_bit
+                )
+
+                boundary_inputs.update(
+                    child[
+                        "boundary_input_bits"
+                    ]
+                )
+
+                boundary_registers.update(
+                    child[
+                        "boundary_register_bits"
+                    ]
+                )
+
+                cells.update(
+                    child[
+                        "cells"
+                    ]
+                )
+
+                unresolved.update(
+                    child[
+                        "unresolved_bits"
+                    ]
+                )
+
+                child_depths.append(
+                    int(
+                        child[
+                            "max_comb_depth"
+                        ]
+                    )
+                )
+
+
+            visiting.remove(
+                bit
+            )
+
+
+            result = {
+                "status": (
+                    "resolved"
+                    if not unresolved
+                    else "unresolved"
+                ),
+                "boundary_input_bits": (
+                    boundary_inputs
+                ),
+                "boundary_register_bits": (
+                    boundary_registers
+                ),
+                "cells": cells,
+                "unresolved_bits": (
+                    unresolved
+                ),
+                "max_comb_depth": (
+                    1
+                    + max(
+                        child_depths,
+                        default=0,
+                    )
+                ),
+            }
+
+
+            memo[bit] = result
+
+            return walk(bit)
+
+
+        internal = walk(
+            root_bit
+        )
+
+
+        unique_cells = sorted(
+            internal[
+                "cells"
+            ]
+        )
+
+
+        operator_counts: Dict[
+            str,
+            int,
+        ] = {}
+
+
+        for cell_name in unique_cells:
+
+            typ = str(
+                self.cells[
+                    cell_name
+                ].get(
+                    "type"
+                )
+                or "unknown"
+            )
+
+            operator_counts[
+                typ
+            ] = (
+                operator_counts.get(
+                    typ,
+                    0,
+                )
+                + 1
+            )
+
+
+        if self.is_primary_input(
+            root_bit
+        ):
+
+            kind = (
+                "primary_input"
+            )
+
+        elif self.q_to_seq.get(
+            root_bit
+        ):
+
+            kind = (
+                "sequential_q"
+            )
+
+        elif len(
+            self.drivers.get(
+                root_bit,
+                set(),
+            )
+        ) == 1:
+
+            kind = (
+                "combinational"
+            )
+
+        else:
+
+            kind = (
+                "unresolved"
+            )
+
+
+        return {
+            "bit": root_bit,
+            "status": internal[
+                "status"
+            ],
+            "kind": kind,
+            "max_comb_depth": internal[
+                "max_comb_depth"
+            ],
+            "cell_count": len(
+                unique_cells
+            ),
+            "operator_counts": {
+                key: operator_counts[key]
+                for key in sorted(
+                    operator_counts
+                )
+            },
+            "boundary_input_bits": sorted(
+                internal[
+                    "boundary_input_bits"
+                ]
+            ),
+            "boundary_register_bits": sorted(
+                internal[
+                    "boundary_register_bits"
+                ]
+            ),
+            "unresolved_bits": sorted(
+                internal[
+                    "unresolved_bits"
+                ]
+            ),
+        }
+
+
+    def remaining_reconvergence(
+        self,
+        precise: Set[str],
+        forward_bits: Set[int],
+        backward_bits: Set[int],
+    ) -> List[Dict[str, Any]]:
+
+        """
+        Detect genuine same-bit mux ambiguity.
+        """
+
+        points = []
+
+
+        for name in sorted(
+            precise
+        ):
+
+            cell = self.cells[
+                name
+            ]
+
+
+            if cell.get(
+                "type"
+            ) != "$mux":
+
+                continue
+
+
+            a = pbits(
+                cell,
+                "A",
+            )
+
+            b = pbits(
+                cell,
+                "B",
+            )
+
+            y = pbits(
+                cell,
+                "Y",
+            )
+
+            s = pbits(
+                cell,
+                "S",
+            )
+
+            select_bits = sorted(
+                {
+                    resolved
+                    for raw in s
+                    if (
+                        resolved := bit_id(raw)
+                    )
+                    is not None
+                }
+            )
+
+            ambiguous = []
+
+
+            for index, raw_y in enumerate(
+                y
+            ):
+
+                y_bit = bit_id(
+                    raw_y
+                )
+
+
+                if (
+                    y_bit is None
+                    or y_bit not in backward_bits
+                ):
+
+                    continue
+
+
+                a_bit = at(
+                    a,
+                    index,
+                )
+
+                b_bit = at(
+                    b,
+                    index,
+                )
+
+
+                a_live = (
+                    a_bit is not None
+                    and a_bit in forward_bits
+                    and a_bit in backward_bits
+                )
+
+
+                b_live = (
+                    b_bit is not None
+                    and b_bit in forward_bits
+                    and b_bit in backward_bits
+                )
+
+
+                if (
+                    a_live
+                    and b_live
+                ):
+
+                    ambiguous.append(
+                        {
+                            "output_index": index,
+                            "output_bit": y_bit,
+                            "a_bit": a_bit,
+                            "b_bit": b_bit,
+                        }
+                    )
+
+
+            if ambiguous:
+
+                points.append(
+                    {
+                        "cell": name,
+                        "type": "$mux",
+                        "select_bits": select_bits,
+                        "select_cones": [
+                            self.analyze_select_cone(
+                                select_bit
+                            )
+                            for select_bit
+                            in select_bits
+                        ],
+                        "ambiguous_outputs": ambiguous,
+                    }
+                )
+
+
+        return points
+
+
+# ---------------------------------------------------------------------------
+# Source mapping
+# ---------------------------------------------------------------------------
+
+def parse_source(
+    raw: str,
+    flow_dir: Path,
+    rtl_roots: Sequence[Path],
+    source_hasher: SourceHashCache,
+) -> Dict[str, Any]:
+
+    match = SRC_RE.match(
+        str(raw).strip()
+    )
+
+
+    if not match:
+
+        return {
+            "raw": raw,
+            "source_type": "unknown",
+        }
+
+
+    filename = match.group(
+        "file"
+    )
+
+    start = int(
+        match.group(
+            "start"
+        )
+    )
+
+    end = int(
+        match.group(
+            "end"
+        )
+        or start
+    )
+
+
+    source_path = Path(
+        filename
+    )
+
+
+    if source_path.is_absolute():
+
+        candidates = [
+            source_path
+        ]
+
+    else:
+
+        candidates = [
+            flow_dir
+            / source_path,
+
+            flow_dir.parent
+            / source_path,
+
+            Path.cwd()
+            / source_path,
+        ]
+
+        for root in rtl_roots:
+
+            candidates.append(
+                root
+                / source_path.name
+            )
+
+
+    resolved = None
+
+
+    for candidate in candidates:
+
+        try:
+
+            if candidate.exists():
+
+                resolved = (
+                    candidate.resolve()
+                )
+
+                break
+
+        except OSError:
+            pass
+
+
+    source_type = (
+        "external_or_generated"
+    )
+
+
+    if resolved:
+
+        for root in rtl_roots:
+
+            try:
+
+                resolved.relative_to(
+                    root.resolve()
+                )
+
+                source_type = (
+                    "user_rtl"
+                )
+
+                break
+
+            except ValueError:
+                pass
+
+
+    raw_norm = filename.replace(
+        "\\",
+        "/",
+    )
+
+
+    if (
+        "/designs/src/"
+        in "/" + raw_norm
+    ):
+
+        source_type = (
+            "user_rtl"
+        )
+
+
+    source_integrity = None
+
+
+    if source_type == "user_rtl":
+
+        if resolved is None:
+
+            raise RuntimeError(
+                "Mapped USER RTL source could not be resolved for hashing: "
+                f"{filename}"
+            )
+
+
+        source_integrity = source_hasher.describe(
+            resolved
+        )
+
+
+    return {
+        "raw": raw,
+        "file": filename,
+        "resolved_file": (
+            str(resolved)
+            if resolved
+            else None
+        ),
+        "start_line": start,
+        "end_line": end,
+        "source_type": source_type,
+        "sha256": (
+            source_integrity.get("sha256")
+            if source_integrity
+            else None
+        ),
+        "source_integrity": source_integrity,
+    }
+
+
+def serialize_cell(
+    name: str,
+    cell: Dict[str, Any],
+    flow_dir: Path,
+    rtl_roots: Sequence[Path],
+    source_hasher: SourceHashCache,
+) -> Dict[str, Any]:
+
+    return {
+        "name": name,
+        "type": cell.get(
+            "type"
+        ),
+        "input_bits": cell.get(
+            "input_bits",
+            [],
+        ),
+        "output_bits": cell.get(
+            "output_bits",
+            [],
+        ),
+        "sources": [
+            parse_source(
+                raw,
+                flow_dir,
+                rtl_roots,
+                source_hasher,
+            )
+            for raw in cell.get(
+                "src",
+                [],
+            )
+        ],
+    }
+
+
+def rtl_regions(
+    cells: Sequence[
+        Dict[str, Any]
+    ],
+) -> List[
+    Dict[str, Any]
+]:
+
+    regions = {}
+
+
+    for cell in cells:
+
+        for source in cell.get(
+            "sources",
+            [],
+        ):
+
+            if source.get(
+                "source_type"
+            ) != "user_rtl":
+
+                continue
+
+
+            filename = (
+                source.get(
+                    "resolved_file"
+                )
+                or source.get(
+                    "file"
+                )
+            )
+
+            start = source.get(
+                "start_line"
+            )
+
+            end = (
+                source.get(
+                    "end_line"
+                )
+                or start
+            )
+
+
+            if (
+                not filename
+                or start is None
+            ):
+                continue
+
+
+            key = (
+                str(filename),
+                int(start),
+                int(end),
+            )
+
+
+            if key not in regions:
+
+                regions[key] = {
+                    "file": filename,
+                    "sha256": source.get(
+                        "sha256"
+                    ),
+                    "hash_algorithm": (
+                        "sha256"
+                        if source.get("sha256")
+                        else None
+                    ),
+                    "start_line": int(
+                        start
+                    ),
+                    "end_line": int(
+                        end
+                    ),
+                    "cell_count": 0,
+                    "operators": Counter(),
+                    "cells": [],
+                }
+
+
+            item = regions[
+                key
+            ]
+
+            item[
+                "cell_count"
+            ] += 1
+
+            item[
+                "operators"
+            ][
+                cell.get(
+                    "type"
+                )
+            ] += 1
+
+            item[
+                "cells"
+            ].append(
+                cell.get(
+                    "name"
+                )
+            )
+
+
+    output = []
+
+
+    for item in regions.values():
+
+        item[
+            "operators"
+        ] = dict(
+            item[
+                "operators"
+            ]
+        )
+
+        item[
+            "cells"
+        ] = sorted(
+            set(
+                item[
+                    "cells"
+                ]
+            )
+        )
+
+        output.append(
+            item
+        )
+
+
+    output.sort(
+        key=lambda item: (
+            item[
+                "cell_count"
+            ],
+            -item[
+                "start_line"
+            ],
+        ),
+        reverse=True,
+    )
+
+
+    return output
+
+
+# ---------------------------------------------------------------------------
+# Path mapping
+# ---------------------------------------------------------------------------
+
+def map_path(
+    path: Dict[str, Any],
+    index: RTLGraphIndex,
+    flow_dir: Path,
+    rtl_roots: Sequence[Path],
+    source_hasher: SourceHashCache,
+) -> Dict[str, Any]:
+
+    result = dict(
+        path
+    )
+
+
+    start = reg_signal(
+        path.get(
+            "startpoint"
+        )
+        or path.get(
+            "startpoint_raw"
+        )
+    )
+
+
+    end = reg_signal(
+        path.get(
+            "endpoint"
+        )
+        or path.get(
+            "endpoint_raw"
+        )
+    )
+
+
+    launch = index.resolve(
+        start
+    )
+
+
+    capture_q = index.resolve(
+        end
+    )
+
+
+    mapping = {
+        "start_signal": start,
+        "end_signal": end,
+        "launch_q": launch,
+        "capture_q": capture_q,
+    }
+
+
+    if launch.get(
+        "status"
+    ) != "resolved":
+
+        mapping[
+            "status"
+        ] = (
+            "start_signal_not_resolved"
+        )
+
+        result[
+            "rtl_mapping"
+        ] = mapping
+
+        return result
+
+
+    if capture_q.get(
+        "status"
+    ) != "resolved":
+
+        mapping[
+            "status"
+        ] = (
+            "end_signal_not_resolved"
+        )
+
+        result[
+            "rtl_mapping"
+        ] = mapping
+
+        return result
+
+
+    endpoint_bit = int(
+        capture_q[
+            "bit"
+        ]
+    )
+
+    capture_d = index.capture_d(
+        endpoint_bit
+    )
+
+    mapping[
+        "capture_d"
+    ] = capture_d
+
+    # --------------------------------------------------------
+    # Generic timing endpoint resolution.
+    #
+    # A physical timing path may terminate either at:
+    #
+    #   * a sequential capture element, in which case the
+    #     structural cone terminates at its D-side bit; or
+    #   * a top-level primary output, in which case the output
+    #     bit itself is the structural endpoint.
+    #
+    # Do not infer this from path-group or clock names.
+    # --------------------------------------------------------
+
+    if (
+        capture_d.get("status")
+        == "resolved"
+    ):
+
+        end_bit = int(
+            capture_d[
+                "d_bit"
+            ]
+        )
+
+        endpoint_kind = (
+            "register_capture"
+        )
+
+    elif index.is_primary_output(
+        endpoint_bit
+    ):
+
+        end_bit = endpoint_bit
+
+        endpoint_kind = (
+            "primary_output"
+        )
+
+        mapping[
+            "capture_d"
+        ] = {
+            "status": "not_applicable",
+            "reason": "primary_output",
+            "q_bit": endpoint_bit,
+        }
+
+    else:
+
+        mapping[
+            "status"
+        ] = (
+            "endpoint_boundary_not_resolved"
+        )
+
+        result[
+            "rtl_mapping"
+        ] = mapping
+
+        return result
+
+    launch_bit = int(
+        launch[
+            "bit"
+        ]
+    )
+
+    forward_cells, forward_bits = (
+        index.forward(
+            launch_bit
+        )
+    )
+
+
+    backward_cells, backward_bits = (
+        index.backward(
+            end_bit
+        )
+    )
+
+
+    coarse = (
+        forward_cells
+        & backward_cells
+    )
+
+
+    precise = index.precise_cells(
+        forward_cells,
+        backward_cells,
+        forward_bits,
+        backward_bits,
+    )
+
+
+    names = sorted(
+        precise
+    )
+
+
+    cells = [
+        serialize_cell(
+            name,
+            index.cells[
+                name
+            ],
+            flow_dir,
+            rtl_roots,
+            source_hasher,
+        )
+        for name in names
+    ]
+
+
+    regions = rtl_regions(
+        cells
+    )
+
+
+    source_integrity = (
+        source_integrity_manifest(
+            cells
+        )
+    )
+
+
+    if (
+        regions
+        and source_integrity.get("status")
+        != "complete"
+    ):
+
+        raise RuntimeError(
+            "Mapped USER RTL cone does not have complete "
+            "mapping-time SHA-256 provenance: "
+            f"{source_integrity.get('errors', [])}"
+        )
+
+
+    branch_points = (
+        index.remaining_reconvergence(
+            precise,
+            forward_bits,
+            backward_bits,
+        )
+    )
+
+
+    mapping.update(
+        {
+            "status": (
+                "mapped"
+                if (
+                    names
+                    or launch_bit
+                    == end_bit
+                )
+                else "no_structural_path"
+            ),
+
+            "method": (
+                "pre_abc_bit_precise_dependency_cone"
+            ),
+
+            "launch_q_bit": launch_bit,
+
+            "capture_d_bit": end_bit,
+
+            "end_bit": end_bit,
+
+            "endpoint_kind": endpoint_kind,
+
+            "rtl_cone_cell_count": len(
+                names
+            ),
+
+            "rtl_cone_cells": cells,
+
+            "operator_counts": dict(
+                Counter(
+                    cell[
+                        "type"
+                    ]
+                    for cell in cells
+                )
+            ),
+
+            "rtl_regions": regions,
+
+            "candidate_rtl_regions": regions,
+
+            "has_user_rtl_source": bool(
+                regions
+            ),
+
+            "source_integrity": (
+                source_integrity
+            ),
+
+            "direct_wire_path": (
+                launch_bit
+                == end_bit
+            ),
+
+            "remaining_logical_reconvergence": bool(
+                branch_points
+            ),
+
+            "logical_branch_points": branch_points,
+
+            "diagnostics": {
+
+                "forward_reachable_bit_count": len(
+                    forward_bits
+                ),
+
+                "backward_reachable_bit_count": len(
+                    backward_bits
+                ),
+
+                "coarse_candidate_cell_count": len(
+                    coarse
+                ),
+
+                "false_reconvergence_cells_pruned": [
+                    {
+                        "name": name,
+                        "type": (
+                            index.cells[
+                                name
+                            ].get(
+                                "type"
+                            )
+                        ),
+                    }
+                    for name in sorted(
+                        coarse
+                        - precise
+                    )
+                ],
+            },
+        }
+    )
+
+
+    result[
+        "rtl_mapping"
+    ] = mapping
+
+
+    return result
+
+
+def find_timing_json(
+    flow_dir: Path,
+    variant: str,
+) -> Path:
+
+    path = (
+        flow_dir
+        / "ai_runs"
+        / f"{variant}_timing_paths.json"
+    )
+
+
+    if not path.exists():
+
+        raise FileNotFoundError(
+            f"Timing JSON not found: {path}"
+        )
+
+
+    return path.resolve()
+
+
+def graph_needs_rebuild(
+    graph_path: Path,
+    checkpoint: Path,
+) -> bool:
+
+    if not graph_path.exists():
+        return True
+
+
+    try:
+
+        return (
+            graph_path.stat().st_mtime
+            <
+            checkpoint.stat().st_mtime
+        )
+
+    except OSError:
+
+        return True
+
+
+
+# ---------------------------------------------------------------------------
+# Two-pass physical witness protocol
+# ---------------------------------------------------------------------------
+
+WITNESS_SCHEMA = "nebula_witness_request/1"
+
+
+def _upstream_sequential_q_bits(index: RTLGraphIndex, start_bit: int) -> Set[int]:
+    """Return sequential Q bits that can feed ``start_bit`` through comb logic."""
+    found: Set[int] = set()
+    seen: Set[int] = set()
+    queue: deque[int] = deque([start_bit])
+    while queue:
+        bit = queue.popleft()
+        if bit in seen:
+            continue
+        seen.add(bit)
+        if index.q_to_seq.get(bit):
+            found.add(bit)
+            continue
+        for cell_name in index.drivers.get(bit, set()):
+            cell = index.cells[cell_name]
+            for prev in inputs_for_output(cell, bit):
+                if prev not in seen:
+                    queue.append(prev)
+    return found
+
+
+def _preferred_bit_name(index: RTLGraphIndex, bit: int) -> Optional[str]:
+    names = [str(v) for v in index.bit_names.get(str(bit), []) if str(v).strip()]
+    if not names:
+        return None
+    # Prefer explicit indexed/register-ish logical names over synthesis internals.
+    def rank(name: str) -> Tuple[int, int, str]:
+        internal = int(name.startswith("$") or "$_" in name)
+        registerish = 0 if ("[" in name or "reg" in name.lower()) else 1
+        return (internal, registerish, len(name), name)
+    return sorted(names, key=rank)[0]
+
+
+def _sta_q_regex(logical_name: str) -> str:
+    clean = str(logical_name).lstrip("\\")
+    # ORFS/Yosys commonly inserts a $_DFF_* suffix between RTL signal and /Q.
+    return r"(^|.*/)" + re.escape(clean) + r".*\/Q$"
+
+
+def _exact_pin_regex(pin: str) -> str:
+    return r"^" + re.escape(str(pin).lstrip("\\")) + r"$"
+
+
+def _sta_capture_d_regex(endpoint: str) -> str:
+    """
+    Convert parse_timing endpoint_raw into the capture data-pin regex.
+
+    parse_timing defines endpoint_raw as the sequential instance name
+    (for example ``y[31]$_DFF_P_``), while the physical STA query must
+    target that instance's D pin.
+
+    Accept an already pin-qualified endpoint as well so synthetic tests
+    and external callers remain backward compatible.
+    """
+    clean = str(endpoint).lstrip("\\")
+    if clean.endswith("/D"):
+        return _exact_pin_regex(clean)
+    return _exact_pin_regex(f"{clean}/D")
+
+
+def _nearest_driver_operator(index: RTLGraphIndex, bit: int) -> Optional[str]:
+    drivers = sorted(index.drivers.get(bit, set()))
+    if len(drivers) != 1:
+        return None
+    return index.cells[drivers[0]].get("type")
+
+
+def derive_witness_requests(
+    mapped_paths: Sequence[Dict[str, Any]],
+    index: RTLGraphIndex,
+    *,
+    design: str,
+    platform: str,
+    variant: str,
+) -> Dict[str, Any]:
+    """Derive branch-exclusive physical timing requests for mux ambiguity."""
+    requests: List[Dict[str, Any]] = []
+    counter = 0
+    unavailable = 0
+
+    for path_index, item in enumerate(mapped_paths):
+        mapping = item.get("rtl_mapping") or {}
+        if not mapping.get("remaining_logical_reconvergence"):
+            continue
+        endpoint = item.get("endpoint_raw") or item.get("endpoint")
+        if not endpoint:
+            endpoint = mapping.get("end_signal")
+
+        for point_index, point in enumerate(mapping.get("logical_branch_points") or []):
+            for output_index, amb in enumerate(point.get("ambiguous_outputs") or []):
+                a_bit = amb.get("a_bit")
+                b_bit = amb.get("b_bit")
+                if not isinstance(a_bit, int) or not isinstance(b_bit, int):
+                    continue
+                a_up = _upstream_sequential_q_bits(index, a_bit)
+                b_up = _upstream_sequential_q_bits(index, b_bit)
+                branches = (
+                    ("mux_a", a_bit, sorted(a_up - b_up)),
+                    ("mux_b", b_bit, sorted(b_up - a_up)),
+                )
+                for branch, branch_bit, exclusive in branches:
+                    witness_id = f"w{counter:04d}"
+                    counter += 1
+                    operator = _nearest_driver_operator(index, branch_bit)
+                    base: Dict[str, Any] = {
+                        "witness_id": witness_id,
+                        "path_index": path_index,
+                        "point_index": point_index,
+                        "output_index": output_index,
+                        "branch": branch,
+                        "operator": operator,
+                        "endpoint": endpoint,
+                        "path_group": item.get("path_group") or item.get("group"),
+                    }
+                    if not exclusive:
+                        unavailable += 1
+                        base.update({
+                            "derivation_status": "unavailable",
+                            "reason": "no_branch_exclusive_upstream_register_bit",
+                        })
+                        requests.append(base)
+                        continue
+                    source_bit = exclusive[0]
+                    source_name = _preferred_bit_name(index, source_bit)
+                    if not source_name or not endpoint:
+                        unavailable += 1
+                        base.update({
+                            "derivation_status": "unavailable",
+                            "reason": "source_or_endpoint_pin_name_unavailable",
+                            "source_bit": source_bit,
+                        })
+                        requests.append(base)
+                        continue
+                    base.update({
+                        "derivation_status": "ready",
+                        "source_bit": source_bit,
+                        "source_signal": source_name,
+                        "from_pin_regex": _sta_q_regex(source_name),
+                        "to_pin_regex": _sta_capture_d_regex(str(endpoint)),
+                    })
+                    requests.append(base)
+
+    ready = sum(1 for r in requests if r.get("derivation_status") == "ready")
+    return {
+        "schema": WITNESS_SCHEMA,
+        "design": design,
+        "platform": platform,
+        "flow_variant": variant,
+        "requests": requests,
+        "summary": {
+            "request_count": len(requests),
+            "ready_count": ready,
+            "unavailable_count": unavailable,
+        },
+    }
+
+
+def _load_witness_timing(witness_dir: Path, witness_id: str) -> Optional[Dict[str, Any]]:
+    candidates = (
+        witness_dir / f"witness_{witness_id}_timing.json",
+        witness_dir / f"witness_{witness_id}.timing.json",
+    )
+    for path in candidates:
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return select_timing_path(data, path)
+            except Exception:
+                return None
+    return None
+
+
+def apply_witness_directory(
+    mapped_paths: Sequence[Dict[str, Any]],
+    request_doc: Mapping[str, Any],
+    witness_dir: Path,
+) -> int:
+    """Attach physical narrowing results to mapped paths in-place."""
+    by_path: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for request in request_doc.get("requests") or []:
+        if request.get("derivation_status") != "ready":
+            continue
+        idx = request.get("path_index")
+        if isinstance(idx, int):
+            by_path[idx].append(request)
+
+    resolved_count = 0
+    for path_index, requests in by_path.items():
+        if path_index < 0 or path_index >= len(mapped_paths):
+            continue
+        item = mapped_paths[path_index]
+        mapping = item.get("rtl_mapping") or {}
+        if not mapping.get("remaining_logical_reconvergence"):
+            continue
+        ambiguous_mux = find_final_mux(item)
+        witnesses: List[Dict[str, Any]] = []
+        request_by_branch: Dict[str, Dict[str, Any]] = {}
+        for request in requests:
+            timing_path = _load_witness_timing(witness_dir, str(request.get("witness_id")))
+            if timing_path is None:
+                continue
+            branch = str(request.get("branch"))
+            request_by_branch[branch] = request
+            witnesses.append({
+                "branch": branch,
+                "startpoint": timing_path.get("startpoint") or timing_path.get("startpoint_raw"),
+                "endpoint": timing_path.get("endpoint") or timing_path.get("endpoint_raw"),
+                "slack_ns": timing_path.get("slack_ns"),
+                "final_mux": find_final_mux(timing_path),
+                "cells": timing_path.get("cells", []),
+            })
+        physical = resolve_branch(
+            ambiguous_mux,
+            witnesses,
+            item.get("endpoint") or item.get("endpoint_raw"),
+            item,
+        )
+        selected_branch = physical.get("selected_branch")
+        selected_request = request_by_branch.get(str(selected_branch)) if selected_branch else None
+        narrowing = {
+            "schema": "nebula_physical_narrowing/1",
+            "resolved": physical.get("status") == "resolved",
+            "selected_rtl_branch": selected_branch,
+            "selected_rtl_operator": (selected_request or {}).get("operator"),
+            "physical_resolution": physical,
+            "witness_ids": [r.get("witness_id") for r in requests],
+            "ambiguous_path": {
+                "startpoint": item.get("startpoint") or item.get("startpoint_raw"),
+                "endpoint": item.get("endpoint") or item.get("endpoint_raw"),
+            },
+        }
+        mapping["physical_narrowing"] = narrowing
+        mapping.setdefault("diagnostics", {})["physical_witness_status"] = (
+            "resolved" if narrowing["resolved"] else "unresolved"
+        )
+        if narrowing["resolved"]:
+            resolved_count += 1
+    return resolved_count
+
+
+def apply_case_physical_resolution(
+    mapped_paths: Sequence[Dict[str, Any]],
+    resolution_doc: Mapping[str, Any],
+    request_doc: Mapping[str, Any],
+    *,
+    design: str,
+    platform: str,
+    variant: str,
+) -> Dict[str, int]:
+    """
+    Attach Phase-5e case-analysis physical narrowing results.
+
+    This is deliberately separate from apply_witness_directory().
+
+    Trusted resolution policy:
+      * original == mux_a != mux_b  -> select mux_a
+      * original == mux_b != mux_a  -> select mux_b
+      * original == mux_a == mux_b  -> shared physical implementation
+      * anything else               -> unresolved
+
+    Suffix-only similarity is diagnostic and NEVER resolves a branch.
+    """
+
+    if (
+        resolution_doc.get("schema")
+        != "nebula_case_physical_resolution/1"
+    ):
+        raise ValueError(
+            "Unexpected case physical resolution schema: "
+            f"{resolution_doc.get('schema')!r}"
+        )
+
+    for key, expected in (
+        ("design", design),
+        ("platform", platform),
+        ("flow_variant", variant),
+    ):
+        actual = resolution_doc.get(key)
+
+        if actual != expected:
+            raise ValueError(
+                "Case physical resolution identity mismatch: "
+                f"{key}={actual!r}, expected {expected!r}"
+            )
+
+    policy = (
+        resolution_doc.get("policy")
+        or {}
+    )
+
+    if (
+        policy.get("exact_signature_required")
+        is not True
+    ):
+        raise ValueError(
+            "Case physical resolution does not require "
+            "exact physical signatures."
+        )
+
+    if (
+        policy.get("suffix_evidence_can_resolve")
+        is not False
+    ):
+        raise ValueError(
+            "Unsafe case physical policy: suffix evidence "
+            "must not be allowed to resolve."
+        )
+
+    results = (
+        resolution_doc.get("results")
+        or []
+    )
+
+    if not isinstance(results, list):
+        raise ValueError(
+            "Case physical resolution 'results' "
+            "must be a list."
+        )
+
+    seen_path_indexes: Set[int] = set()
+
+    counts = {
+        "result_count": 0,
+        "resolved_count": 0,
+        "selected_mux_a_count": 0,
+        "selected_mux_b_count": 0,
+        "shared_count": 0,
+        "unresolved_count": 0,
+        "skipped_already_resolved_count": 0,
+    }
+
+    # Mapper-derived branch/operator provenance.
+    #
+    # Do NOT infer operator identity from the strings
+    # "mux_a" / "mux_b".  The old witness-request derivation
+    # already knows which RTL operator feeds each structural
+    # branch.  Its requests may be unavailable for physical
+    # execution (for example PI->PO), but their RTL provenance
+    # remains useful.
+    branch_operator_index: Dict[Any, Set[str]] = defaultdict(set)
+
+    for request in request_doc.get("requests") or []:
+
+        if not isinstance(request, dict):
+            continue
+
+        request_path_index = request.get(
+            "path_index"
+        )
+
+        request_branch = request.get(
+            "branch"
+        )
+
+        request_operator = request.get(
+            "operator"
+        )
+
+        if (
+            isinstance(request_path_index, int)
+            and isinstance(request_branch, str)
+            and request_branch
+            and isinstance(request_operator, str)
+            and request_operator
+        ):
+            branch_operator_index[
+                (
+                    request_path_index,
+                    request_branch,
+                )
+            ].add(
+                request_operator
+            )
+
+    def branch_operator_for(
+        path_index: int,
+        branch: str,
+        mapping: Mapping[str, Any],
+    ) -> Optional[str]:
+        """
+        Return a branch operator only when provenance is unique.
+
+        First use mapper-derived witness metadata.  Then inspect
+        structural mapping metadata as a generic fallback.  Never
+        infer an operator from a branch name.
+        """
+
+        operators = set(
+            branch_operator_index.get(
+                (
+                    path_index,
+                    branch,
+                ),
+                set(),
+            )
+        )
+
+        def walk(value: Any) -> None:
+
+            if isinstance(value, dict):
+
+                candidate_branch = (
+                    value.get("branch")
+                    or value.get("rtl_branch")
+                )
+
+                candidate_operator = (
+                    value.get("operator")
+                    or value.get("rtl_operator")
+                )
+
+                if (
+                    candidate_branch == branch
+                    and isinstance(
+                        candidate_operator,
+                        str,
+                    )
+                    and candidate_operator
+                ):
+                    operators.add(
+                        candidate_operator
+                    )
+
+                nested = value.get(
+                    branch
+                )
+
+                if isinstance(
+                    nested,
+                    dict,
+                ):
+                    nested_operator = (
+                        nested.get("operator")
+                        or nested.get(
+                            "rtl_operator"
+                        )
+                    )
+
+                    if (
+                        isinstance(
+                            nested_operator,
+                            str,
+                        )
+                        and nested_operator
+                    ):
+                        operators.add(
+                            nested_operator
+                        )
+
+                for child in value.values():
+                    if isinstance(
+                        child,
+                        (dict, list),
+                    ):
+                        walk(child)
+
+            elif isinstance(value, list):
+
+                for child in value:
+                    if isinstance(
+                        child,
+                        (dict, list),
+                    ):
+                        walk(child)
+
+        # Restrict fallback inspection to RTL mapping metadata.
+        walk(mapping)
+
+        if len(operators) == 1:
+            return next(
+                iter(operators)
+            )
+
+        # Zero or conflicting operators is not enough evidence.
+        return None
+
+    for result in results:
+
+        if not isinstance(result, dict):
+            raise ValueError(
+                "Case physical resolution result "
+                "must be an object."
+            )
+
+        path_index = result.get(
+            "path_index"
+        )
+
+        if not isinstance(path_index, int):
+            raise ValueError(
+                "Case physical resolution result "
+                "has invalid path_index."
+            )
+
+        if path_index in seen_path_indexes:
+            raise ValueError(
+                f"Duplicate case physical result "
+                f"for path {path_index}."
+            )
+
+        seen_path_indexes.add(
+            path_index
+        )
+
+        if (
+            path_index < 0
+            or path_index >= len(mapped_paths)
+        ):
+            raise ValueError(
+                f"Case physical path_index out of range: "
+                f"{path_index}"
+            )
+
+        counts["result_count"] += 1
+
+        item = mapped_paths[
+            path_index
+        ]
+
+        mapping = (
+            item.get("rtl_mapping")
+            or {}
+        )
+
+        if not isinstance(mapping, dict):
+            raise ValueError(
+                f"path {path_index}: rtl_mapping "
+                "is not an object"
+            )
+
+        if not mapping.get(
+            "remaining_logical_reconvergence"
+        ):
+            raise ValueError(
+                f"path {path_index}: stale case physical "
+                "evidence references a path without "
+                "remaining logical reconvergence"
+            )
+
+        # Preserve the proven old witness path.
+        existing_physical = (
+            mapping.get(
+                "physical_narrowing"
+            )
+            or {}
+        )
+
+        if (
+            isinstance(
+                existing_physical,
+                dict,
+            )
+            and existing_physical.get(
+                "resolved"
+            )
+        ):
+            counts[
+                "skipped_already_resolved_count"
+            ] += 1
+            continue
+
+        status = result.get(
+            "status"
+        )
+
+        method = result.get(
+            "resolution_method"
+        )
+
+        selected_branch = result.get(
+            "selected_branch"
+        )
+
+        selected_operator = (
+            branch_operator_for(
+                path_index,
+                selected_branch,
+                mapping,
+            )
+            if isinstance(
+                selected_branch,
+                str,
+            )
+            and selected_branch
+            else None
+        )
+
+        branch_selection_required = (
+            result.get(
+                "branch_selection_required"
+            )
+        )
+
+        evidence = (
+            result.get("evidence")
+            or {}
+        )
+
+        matches = (
+            evidence.get(
+                "original_matches"
+            )
+            or {}
+        )
+
+        match_a = (
+            matches.get("mux_a")
+        )
+
+        match_b = (
+            matches.get("mux_b")
+        )
+
+        resolved = False
+        shared = False
+
+        # ----------------------------------------------------
+        # Validate every trusted resolved state again here.
+        #
+        # Never trust the standalone artifact blindly.
+        # ----------------------------------------------------
+
+        if status == "resolved":
+
+            if (
+                method
+                == "case_analysis_exact_physical_match"
+            ):
+
+                if selected_branch == "mux_a":
+
+                    if not (
+                        branch_selection_required
+                        is True
+                        and match_a is True
+                        and match_b is False
+                    ):
+                        raise ValueError(
+                            f"path {path_index}: invalid "
+                            "mux_a exact-match evidence"
+                        )
+
+                    counts[
+                        "selected_mux_a_count"
+                    ] += 1
+
+                elif selected_branch == "mux_b":
+
+                    if not (
+                        branch_selection_required
+                        is True
+                        and match_b is True
+                        and match_a is False
+                    ):
+                        raise ValueError(
+                            f"path {path_index}: invalid "
+                            "mux_b exact-match evidence"
+                        )
+
+                    counts[
+                        "selected_mux_b_count"
+                    ] += 1
+
+                else:
+                    raise ValueError(
+                        f"path {path_index}: exact-match "
+                        "resolution has invalid selected_branch"
+                    )
+
+                resolved = True
+
+            elif (
+                method
+                == "case_analysis_shared_"
+                   "physical_implementation"
+            ):
+
+                if not (
+                    selected_branch is None
+                    and branch_selection_required
+                    is False
+                    and match_a is True
+                    and match_b is True
+                ):
+                    raise ValueError(
+                        f"path {path_index}: invalid shared "
+                        "physical resolution evidence"
+                    )
+
+                resolved = True
+                shared = True
+
+                counts[
+                    "shared_count"
+                ] += 1
+
+            else:
+                raise ValueError(
+                    f"path {path_index}: unsupported trusted "
+                    f"resolution method {method!r}"
+                )
+
+        elif status == "unresolved":
+
+            if selected_branch is not None:
+                raise ValueError(
+                    f"path {path_index}: unresolved case "
+                    "evidence selected a branch"
+                )
+
+            counts[
+                "unresolved_count"
+            ] += 1
+
+        else:
+            raise ValueError(
+                f"path {path_index}: invalid case "
+                f"physical status {status!r}"
+            )
+
+        normalized_result = dict(
+            result
+        )
+
+        if status == "resolved":
+            normalized_result[
+                "confidence"
+            ] = "high"
+
+        elif status == "unresolved":
+            normalized_result.setdefault(
+                "confidence",
+                "low",
+            )
+
+        witness_ids = []
+
+        for key in (
+            "mux_a_witness_id",
+            "mux_b_witness_id",
+        ):
+            value = evidence.get(
+                key
+            )
+
+            if value is not None:
+                witness_ids.append(
+                    value
+                )
+
+        case_narrowing = {
+            "schema": (
+                "nebula_case_physical_narrowing/1"
+            ),
+            "resolved": resolved,
+            "resolution_method": method,
+            "selected_rtl_branch": (
+                selected_branch
+            ),
+            "selected_rtl_operator": (
+                selected_operator
+            ),
+            "branch_selection_required": (
+                branch_selection_required
+            ),
+            "shared_physical_implementation": (
+                shared
+            ),
+            "physical_resolution": (
+                normalized_result
+            ),
+            "witness_ids": (
+                witness_ids
+            ),
+            "ambiguous_path": {
+                "startpoint": (
+                    item.get("startpoint")
+                    or item.get("startpoint_raw")
+                ),
+                "endpoint": (
+                    item.get("endpoint")
+                    or item.get("endpoint_raw")
+                ),
+            },
+        }
+
+        mapping[
+            "case_physical_narrowing"
+        ] = case_narrowing
+
+        # ----------------------------------------------------
+        # Compatibility bridge:
+        #
+        # Downstream code already understands the generic
+        # mapping["physical_narrowing"] contract produced by
+        # the old witness path.
+        #
+        # Populate it only when the old physical resolver has
+        # not already resolved this path.
+        # ----------------------------------------------------
+
+        mapping[
+            "physical_narrowing"
+        ] = {
+            "schema": (
+                "nebula_physical_narrowing/1"
+            ),
+            "resolved": resolved,
+            "selected_rtl_branch": (
+                selected_branch
+            ),
+            "selected_rtl_operator": (
+                selected_operator
+            ),
+            "physical_resolution": (
+                normalized_result
+            ),
+            "resolution_source": (
+                "case_analysis_exact_signature"
+            ),
+            "shared_physical_implementation": (
+                shared
+            ),
+            "witness_ids": (
+                witness_ids
+            ),
+            "ambiguous_path": {
+                "startpoint": (
+                    item.get("startpoint")
+                    or item.get("startpoint_raw")
+                ),
+                "endpoint": (
+                    item.get("endpoint")
+                    or item.get("endpoint_raw")
+                ),
+            },
+        }
+
+        mapping.setdefault(
+            "diagnostics",
+            {},
+        )[
+            "physical_case_status"
+        ] = (
+            "resolved"
+            if resolved
+            else "unresolved"
+        )
+
+        if resolved:
+            counts[
+                "resolved_count"
+            ] += 1
+
+    return counts
+
+
+
+def run_witness_self_test() -> None:
+    # Synthetic graph: q_a -> XOR -> mux.A, q_b -> ADD -> mux.B, shared endpoint.
+    graph = {
+        "cells": {
+            "ra": {"sequential": True, "type": "$_DFF_P_", "connections": {"Q": [1], "D": [11]}, "port_directions": {"Q": "output", "D": "input"}, "input_bits": [11], "output_bits": [1]},
+            "rb": {"sequential": True, "type": "$_DFF_P_", "connections": {"Q": [2], "D": [12]}, "port_directions": {"Q": "output", "D": "input"}, "input_bits": [12], "output_bits": [2]},
+            "xor": {"sequential": False, "type": "$xor", "connections": {"A": [1], "B": [1], "Y": [3]}, "port_directions": {"A": "input", "B": "input", "Y": "output"}, "input_bits": [1], "output_bits": [3]},
+            "add": {"sequential": False, "type": "$add", "connections": {"A": [2], "B": [2], "Y": [4]}, "port_directions": {"A": "input", "B": "input", "Y": "output"}, "input_bits": [2], "output_bits": [4]},
+            "mux": {"sequential": False, "type": "$mux", "connections": {"A": [3], "B": [4], "S": [9], "Y": [5]}, "port_directions": {"A": "input", "B": "input", "S": "input", "Y": "output"}, "input_bits": [3,4,9], "output_bits": [5]},
+        },
+        "signal_bits": {
+            "a_reg[0]": [1],
+            "b_reg[0]": [2],
+            "sel": [9],
+        },
+        "bit_names": {
+            "1": ["a_reg[0]"],
+            "2": ["b_reg[0]"],
+            "9": ["sel"],
+        },
+        "ports": {
+            "sel": {
+                "direction": "input",
+                "bits": [9],
+            },
+        },
+    }
+    idx = RTLGraphIndex(graph, "demo")
+
+    branch_points = idx.remaining_reconvergence(
+        {"mux"},
+        {1, 2, 3, 4, 5, 9},
+        {3, 4, 5},
+    )
+
+    assert len(branch_points) == 1
+    assert branch_points[0]["cell"] == "mux"
+    assert branch_points[0]["select_bits"] == [9]
+
+    select_cones = branch_points[0]["select_cones"]
+
+    assert len(select_cones) == 1
+    assert select_cones[0]["bit"] == 9
+    assert select_cones[0]["status"] == "resolved"
+    assert select_cones[0]["kind"] == "primary_input"
+    assert select_cones[0]["max_comb_depth"] == 0
+    assert select_cones[0]["cell_count"] == 0
+    assert select_cones[0]["operator_counts"] == {}
+    assert select_cones[0]["boundary_input_bits"] == [9]
+    assert select_cones[0]["boundary_register_bits"] == []
+    assert select_cones[0]["unresolved_bits"] == []
+
+    assert (
+        branch_points[0]["ambiguous_outputs"][0]["a_bit"]
+        == 3
+    )
+    assert (
+        branch_points[0]["ambiguous_outputs"][0]["b_bit"]
+        == 4
+    )
+
+    mapped = [{
+        "endpoint": "y[0]$_DFF_P_/D",
+        "rtl_mapping": {
+            "remaining_logical_reconvergence": True,
+            "logical_branch_points": [{"cell": "mux", "ambiguous_outputs": [{"output_index": 0, "output_bit": 5, "a_bit": 3, "b_bit": 4}]}],
+        },
+    }]
+    doc = derive_witness_requests(mapped, idx, design="demo", platform="nangate45", variant="v")
+    ready = [r for r in doc["requests"] if r.get("derivation_status") == "ready"]
+    assert len(ready) == 2
+    assert {r["source_signal"] for r in ready} == {"a_reg[0]", "b_reg[0]"}
+    assert {r["operator"] for r in ready} == {"$xor", "$add"}
+    assert doc["summary"]["ready_count"] == 2
+    print("PASS: map_to_rtl witness request self-test")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Bit-precise pre-ABC RTL timing-path mapper."
+        )
+    )
+
+
+    parser.add_argument(
+        "--variant",
+        required=False,
+    )
+
+    parser.add_argument(
+        "--design",
+        default="timing_demo",
+    )
+
+    parser.add_argument(
+        "--top",
+        default=None,
+        help=(
+            "Actual RTL/Yosys top module. Defaults to --design for "
+            "backward compatibility."
+        ),
+    )
+
+    parser.add_argument(
+        "--platform",
+        default="nangate45",
+    )
+
+    parser.add_argument(
+        "--flow-dir",
+        default=str(
+            DEFAULT_FLOW_DIR
+        ),
+    )
+
+    parser.add_argument(
+        "--timing-json"
+    )
+
+    parser.add_argument(
+        "--rtl-graph"
+    )
+
+    parser.add_argument(
+        "--checkpoint"
+    )
+
+    parser.add_argument(
+        "--yosys"
+    )
+
+    parser.add_argument(
+        "--rebuild-graph",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--output"
+    )
+
+    parser.add_argument(
+        "--rtl-root",
+        action="append",
+        default=[],
+    )
+
+    parser.add_argument(
+        "--witness-dir",
+        default=None,
+        help="Directory containing parsed witness_<id>_timing.json files for second-pass physical narrowing.",
+    )
+
+    parser.add_argument(
+        "--witness-request",
+        default=None,
+        help="Optional output path for nebula_witness_request/1 JSON.",
+    )
+
+    parser.add_argument(
+        "--case-physical-resolution",
+        default=None,
+        help=(
+            "Optional nebula_case_physical_resolution/1 "
+            "artifact for Phase-5e exact-signature "
+            "physical narrowing."
+        ),
+    )
+
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run synthetic witness-request derivation tests.",
+    )
+
+
+    args = parser.parse_args()
+
+    if args.self_test:
+        run_witness_self_test()
+        return
+
+    if not args.variant:
+        parser.error("--variant is required unless --self-test is used")
+
+    flow_dir = Path(
+        args.flow_dir
+    ).resolve()
+
+    # Keep benchmark/ORFS identity separate from the actual Verilog top.
+    rtl_top = args.top or args.design
+
+
+    timing_json = (
+        Path(
+            args.timing_json
+        ).resolve()
+
+        if args.timing_json
+
+        else find_timing_json(
+            flow_dir,
+            args.variant,
+        )
+    )
+
+
+    rtl_roots = [
+        path.resolve()
+
+        for path in [
+            (
+                flow_dir
+                / "designs"
+                / "src"
+                / args.design
+            ),
+
+            (
+                flow_dir
+                / "designs"
+                / args.platform
+                / args.design
+            ),
+
+            *[
+                Path(value)
+                for value
+                in args.rtl_root
+            ],
+        ]
+
+        if path.exists()
+    ]
+
+
+    if not rtl_roots:
+
+        raise RuntimeError(
+            "No RTL root found. "
+            "Use --rtl-root if necessary."
+        )
+
+
+    checkpoint = (
+        Path(
+            args.checkpoint
+        ).resolve()
+
+        if args.checkpoint
+
+        else find_canonical_checkpoint(
+            flow_dir,
+            args.platform,
+            args.design,
+            args.variant,
+        )
+    )
+
+
+    graph_path = (
+        Path(
+            args.rtl_graph
+        ).resolve()
+
+        if args.rtl_graph
+
+        else (
+            flow_dir
+            / "ai_runs"
+            / f"{args.variant}_rtl_graph.json"
+        ).resolve()
+    )
+
+
+    graph_top_mismatch = False
+
+    if graph_path.exists():
+        try:
+            existing_graph = json.loads(graph_path.read_text())
+            existing_top = (
+                existing_graph.get("rtl_top")
+                or existing_graph.get("module")
+                or existing_graph.get("design")
+            )
+            graph_top_mismatch = (
+                norm(existing_top) != norm(rtl_top)
+            )
+        except Exception:
+            graph_top_mismatch = True
+
+    if (
+        args.rebuild_graph
+        or graph_top_mismatch
+        or graph_needs_rebuild(
+            graph_path,
+            checkpoint,
+        )
+    ):
+
+        print(
+            "Building pre-ABC RTL graph..."
+        )
+
+
+        graph_path, graph = build_rtl_graph(
+
+            flow_dir=flow_dir,
+
+            platform=args.platform,
+
+            design=args.design,
+
+            top=rtl_top,
+
+            variant=args.variant,
+
+            output_file=graph_path,
+
+            checkpoint=checkpoint,
+
+            yosys_path=args.yosys,
+        )
+
+
+    else:
+
+        graph = json.loads(
+            graph_path.read_text()
+        )
+
+
+    timing = json.loads(
+        timing_json.read_text()
+    )
+
+
+    paths = timing.get(
+        "paths"
+    )
+
+
+    if not isinstance(
+        paths,
+        list,
+    ):
+
+        raise ValueError(
+            "Timing JSON must contain "
+            "a top-level 'paths' list."
+        )
+
+
+    index = RTLGraphIndex(
+        graph,
+        args.design,
+    )
+
+
+    source_hasher = (
+        SourceHashCache()
+    )
+
+
+    mapped = [
+        map_path(
+            path,
+            index,
+            flow_dir,
+            rtl_roots,
+            source_hasher,
+        )
+
+        for path in paths
+    ]
+
+    witness_request_doc = derive_witness_requests(
+        mapped,
+        index,
+        design=args.design,
+        platform=args.platform,
+        variant=args.variant,
+    )
+
+    witness_resolved_count = 0
+    if args.witness_dir:
+        witness_resolved_count = apply_witness_directory(
+            mapped,
+            witness_request_doc,
+            Path(args.witness_dir).expanduser().resolve(),
+        )
+
+
+    case_physical_counts = {
+        "result_count": 0,
+        "resolved_count": 0,
+        "selected_mux_a_count": 0,
+        "selected_mux_b_count": 0,
+        "shared_count": 0,
+        "unresolved_count": 0,
+        "skipped_already_resolved_count": 0,
+    }
+
+    if args.case_physical_resolution:
+
+        case_resolution_path = (
+            Path(
+                args.case_physical_resolution
+            )
+            .expanduser()
+            .resolve()
+        )
+
+        try:
+            case_resolution_doc = json.loads(
+                case_resolution_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "Invalid case physical resolution JSON: "
+                f"{case_resolution_path}"
+            ) from exc
+
+        if not isinstance(
+            case_resolution_doc,
+            dict,
+        ):
+            raise ValueError(
+                "Case physical resolution must contain "
+                "a top-level JSON object."
+            )
+
+        case_physical_counts = (
+            apply_case_physical_resolution(
+                mapped,
+                case_resolution_doc,
+                witness_request_doc,
+                design=args.design,
+                platform=args.platform,
+                variant=args.variant,
+            )
+        )
+
+
+    mapped_count = sum(
+        1
+
+        for path in mapped
+
+        if (
+            path.get(
+                "rtl_mapping"
+            )
+            or {}
+        ).get(
+            "status"
+        )
+        == "mapped"
+    )
+
+
+    source_count = sum(
+        1
+
+        for path in mapped
+
+        if (
+            path.get(
+                "rtl_mapping"
+            )
+            or {}
+        ).get(
+            "has_user_rtl_source"
+        )
+    )
+
+
+    ambiguous_count = sum(
+        1
+
+        for path in mapped
+
+        if (
+            path.get(
+                "rtl_mapping"
+            )
+            or {}
+        ).get(
+            "remaining_logical_reconvergence"
+        )
+    )
+
+
+    effective_unresolved_count = sum(
+        1
+        for path in mapped
+        if (
+            (
+                path.get(
+                    "rtl_mapping"
+                )
+                or {}
+            ).get(
+                "remaining_logical_reconvergence"
+            )
+            is True
+            and not (
+                isinstance(
+                    (
+                        (
+                            path.get(
+                                "rtl_mapping"
+                            )
+                            or {}
+                        ).get(
+                            "physical_narrowing"
+                        )
+                    ),
+                    dict,
+                )
+                and (
+                    (
+                        (
+                            path.get(
+                                "rtl_mapping"
+                            )
+                            or {}
+                        ).get(
+                            "physical_narrowing"
+                        )
+                        or {}
+                    ).get(
+                        "resolved"
+                    )
+                    is True
+                )
+            )
+        )
+    )
+
+
+    total = len(
+        mapped
+    )
+
+
+    complete_hash_count = sum(
+        1
+        for path in mapped
+        if (
+            (
+                (path.get("rtl_mapping") or {})
+                .get("source_integrity")
+                or {}
+            ).get("status")
+            == "complete"
+        )
+    )
+
+
+    run_source_integrity = (
+        merge_run_source_integrity(
+            mapped
+        )
+    )
+
+
+    if (
+        source_count
+        and run_source_integrity.get("status")
+        != "complete"
+    ):
+
+        raise RuntimeError(
+            "Run-level USER RTL SHA-256 provenance is incomplete: "
+            f"{run_source_integrity.get('errors', [])}"
+        )
+
+
+    output = {
+
+        "schema_version": 5,
+
+        "mapping_semantics": (
+            "Pre-ABC bit-precise RTL dependency cone. "
+            "False reconvergent branches are pruned; "
+            "genuine remaining same-bit reconvergence "
+            "is reported, not guessed."
+        ),
+
+        "design": args.design,
+
+        "platform": args.platform,
+
+        "flow_variant": args.variant,
+
+        "source_timing_json": str(
+            timing_json
+        ),
+
+        "source_rtl_graph": str(
+            graph_path
+        ),
+
+        "source_checkpoint": str(
+            checkpoint
+        ),
+
+        "source_integrity": (
+            run_source_integrity
+        ),
+
+        "witness_requests_pending": witness_request_doc["summary"]["ready_count"],
+
+        "witness_resolved_path_count": witness_resolved_count,
+
+        "case_physical_resolved_path_count": (
+            case_physical_counts[
+                "resolved_count"
+            ]
+        ),
+
+        "case_physical_resolution": (
+            case_physical_counts
+        ),
+
+        "summary": {
+
+            "timing_path_count": total,
+
+            "structurally_mapped_path_count": (
+                mapped_count
+            ),
+
+            "paths_with_user_rtl_source": (
+                source_count
+            ),
+
+            "paths_with_remaining_logical_reconvergence": (
+                ambiguous_count
+            ),
+
+            "paths_with_effective_unresolved_reconvergence": (
+                effective_unresolved_count
+            ),
+
+            "paths_with_complete_mapping_time_source_hash": (
+                complete_hash_count
+            ),
+
+            "mapping_time_source_hash_coverage": (
+                round(
+                    complete_hash_count
+                    / source_count,
+                    4,
+                )
+                if source_count
+                else 0.0
+            ),
+
+            "structural_mapping_coverage": (
+                round(
+                    mapped_count
+                    / total,
+                    4,
+                )
+
+                if total
+
+                else 0.0
+            ),
+
+            "user_rtl_source_coverage": (
+                round(
+                    source_count
+                    / total,
+                    4,
+                )
+
+                if total
+
+                else 0.0
+            ),
+        },
+
+        "paths": mapped,
+    }
+
+
+    output_file = (
+        Path(
+            args.output
+        ).resolve()
+
+        if args.output
+
+        else (
+            flow_dir
+            / "ai_runs"
+            / f"{args.variant}_rtl_mapped.json"
+        ).resolve()
+    )
+
+
+    output_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    witness_request_file = (
+        Path(args.witness_request).expanduser().resolve()
+        if args.witness_request
+        else output_file.with_name(
+            output_file.name.replace("_rtl_mapped.json", "_witness_request.json")
+            if output_file.name.endswith("_rtl_mapped.json")
+            else output_file.stem + "_witness_request.json"
+        )
+    )
+    witness_request_doc["source_mapped_json"] = str(output_file)
+    witness_request_file.write_text(
+        json.dumps(witness_request_doc, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    output["witness_request"] = str(witness_request_file)
+
+
+    output_file.write_text(
+        json.dumps(
+            output,
+            indent=2,
+        )
+    )
+
+
+    print()
+    print(
+        "=" * 64
+    )
+    print(
+        "RTL Bit-Precise Mapping"
+    )
+    print(
+        "=" * 64
+    )
+
+    print(
+        f"Design                  : "
+        f"{args.design}"
+    )
+
+    print(
+        f"Flow Variant            : "
+        f"{args.variant}"
+    )
+
+    print(
+        f"Timing paths            : "
+        f"{total}"
+    )
+
+    print(
+        f"Mapped                  : "
+        f"{mapped_count}"
+    )
+
+    print(
+        f"With USER RTL source    : "
+        f"{source_count}"
+    )
+
+    print(
+        f"Remaining reconvergence : "
+        f"{ambiguous_count}"
+    )
+
+    print(
+        f"Witness requests ready  : "
+        f"{witness_request_doc['summary']['ready_count']}"
+    )
+
+    print(
+        f"Witness paths resolved  : "
+        f"{witness_resolved_count}"
+    )
+
+    print(
+        f"Source hash coverage    : "
+        f"{complete_hash_count}/{source_count}"
+    )
+
+    print(
+        f"Source hash status      : "
+        f"{run_source_integrity.get('status')}"
+    )
+
+
+    if mapped:
+
+        worst = min(
+            mapped,
+
+            key=lambda path: (
+                path.get(
+                    "slack_ns"
+                )
+
+                if path.get(
+                    "slack_ns"
+                ) is not None
+
+                else float(
+                    "inf"
+                )
+            ),
+        )
+
+
+        mapping = (
+            worst.get(
+                "rtl_mapping"
+            )
+            or {}
+        )
+
+
+        print()
+        print(
+            "Worst path"
+        )
+        print(
+            "-" * 64
+        )
+
+        print(
+            f"Start      : "
+            f"{worst.get('startpoint')}"
+        )
+
+        print(
+            f"End        : "
+            f"{worst.get('endpoint')}"
+        )
+
+        print(
+            f"Slack      : "
+            f"{worst.get('slack_ns')} ns"
+        )
+
+        print(
+            f"Method     : "
+            f"{mapping.get('method')}"
+        )
+
+        print(
+            f"Operators  : "
+            f"{mapping.get('operator_counts', {})}"
+        )
+
+        print(
+            f"Ambiguous  : "
+            f"{mapping.get('remaining_logical_reconvergence', False)}"
+        )
+
+        print(
+            "Pruned     : "
+            f"{mapping.get('diagnostics', {}).get('false_reconvergence_cells_pruned', [])}"
+        )
+
+
+    print()
+    print(
+        f"Mapped JSON: "
+        f"{output_file}"
+    )
+
+    print(
+        "=" * 64
+    )
+
+
+if __name__ == "__main__":
+    main()

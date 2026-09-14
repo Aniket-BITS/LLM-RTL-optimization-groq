@@ -1,0 +1,14 @@
+V1.3 pipeline-alignment prompt patch validation
+
+Scope:
+- Added one model-facing rule requiring transaction-cycle alignment across all downstream dependencies when inserting or moving a pipeline boundary.
+- No pipeline unlock/gating policy added.
+- No changes to latency verifier, temporal formal semantics, synthesis dedupe, PPA comparison, Golden/Current-Best references, or promotion policy.
+
+Validation in assistant environment:
+- py_compile: PASS
+- focused pytest: 71 passed, 14 skipped
+- top-level self_test.py: PASS
+- prompt_renderer --self-test: PASS
+- inherited guided runner tests: 11 passed
+- Groq/Yosys/OpenROAD: NOT RUN here

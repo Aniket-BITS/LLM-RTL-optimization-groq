@@ -1,0 +1,24 @@
+{
+  "id": "arith.csla_split",
+  "name": "Carry-select adder split",
+  "family": "arithmetic_restructuring",
+  "applies_when": {
+    "class": ["arithmetic"],
+    "pattern_in": ["adder", "adder_followed_by_mux"],
+    "requires_flags": ["allow_arithmetic_restructuring"]
+  },
+  "latency_effect": "preserves",
+  "equivalence_class": "combinational_same_latency",
+  "sec_recipe": "equiv_make+equiv_induct",
+  "template": "Split a wide ripple addition into fixed-width blocks, precompute each higher block for carry-in 0 and 1, and select on the incoming carry. Cuts the carry-chain depth from N bits to blocksize + a mux cascade. Same result, same latency.",
+  "example": {
+    "before": "wire [31:0] sum = a + b;",
+    "after":  "wire [8:0] s0 = a[7:0]+b[7:0]; wire c0=s0[8]; wire [8:0] s1_0=a[15:8]+b[15:8]; wire [8:0] s1_1=a[15:8]+b[15:8]+1'b1; assign sum[7:0]=s0[7:0]; assign sum[15:8]=c0?s1_1[7:0]:s1_0[7:0]; /* ...repeat for blocks 2,3... */"
+  },
+  "guardrails": [
+    "Keep block boundaries aligned to the operand width; cover every bit exactly once.",
+    "Do not add registers or change latency.",
+    "Do not alter the module ports or the clocked always block."
+  ],
+  "version": "1.0.0"
+}

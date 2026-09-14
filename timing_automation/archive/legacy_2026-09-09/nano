@@ -1,0 +1,66 @@
+import subprocess
+from pathlib import Path
+
+FLOW_DIR = Path.home() / "OpenROAD-flow-scripts" / "flow"
+DESIGN_CONFIG = "./designs/nangate45/timing_demo/config.mk"
+
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+LOG_FILE = LOG_DIR / "run.log"
+
+
+def run_command(command):
+    return subprocess.run(
+        command,
+        cwd=FLOW_DIR,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT
+    )
+
+
+def run_openroad():
+
+    # 1. Clean previous run
+    print("Cleaning previous OpenROAD run...")
+
+    clean_cmd = [
+        "make",
+        f"DESIGN_CONFIG={DESIGN_CONFIG}",
+        "clean_all"
+    ]
+
+    clean_result = run_command(clean_cmd)
+
+    if clean_result.returncode != 0:
+        print("Cleaning failed:")
+        print(clean_result.stdout)
+        return
+
+    print("Previous run cleaned.")
+
+    # 2. Run fresh flow
+    print("\nRunning OpenROAD...")
+
+    run_cmd = [
+        "make",
+        f"DESIGN_CONFIG={DESIGN_CONFIG}"
+    ]
+
+    result = run_command(run_cmd)
+
+    LOG_FILE.write_text(result.stdout)
+
+    print(result.stdout)
+
+    if result.returncode == 0:
+        print("\nOpenROAD flow completed successfully.")
+    else:
+        print("\nOpenROAD flow failed.")
+
+    print(f"Log saved to: {LOG_FILE}")
+
+
+if __name__ == "__main__":
+    run_openroad()

@@ -1,0 +1,534 @@
+{
+  "schema": "nebula_calibration_corpus/1",
+  "name": "rtl_opt",
+  "source": {
+    "uri": "https://huggingface.co/datasets/nora1220/RTL-OPT",
+    "license": "MIT",
+    "git_revision": "0c74b6782c9c212f73e6cad7191147119c020a28",
+    "payload": "external/RTL-OPT-cache/test-00000-of-00001.parquet",
+    "payload_sha256": "b1ae4140c8f3f24047e959458020fad5d8dc7eaf6f071c24ccb9d422a032f399"
+  },
+  "pair_count": 40,
+  "pairs": [
+    {
+      "id": "add_sub",
+      "baseline_file": "add_sub.v",
+      "reference_file": "add_sub_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "3e24786b2d37cbd97e8c69805d4686f50eb1c188bc68bb0acc5e555600041b96",
+      "reference_text_sha256": "2b84a15d62a13363d6aa25f3084288bf7f0ec9fb70fb0025466e3b8c7702c319",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "adder_carry",
+      "baseline_file": "adder_carry.v",
+      "reference_file": "adder_carry_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "f620813a29622ae0dc3c9a4390c110ec5cf95d8d42c2bb36220d0245870b5abb",
+      "reference_text_sha256": "9502776113ab7bc36d70b79fb2b580b16782a521bb8b888850124455ffd97ded",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "adder",
+      "baseline_file": "adder.v",
+      "reference_file": "adder_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "e2ba0e7c653d5c90bb859b035a2ebe2912eb269e055b68a6021cd8138940cd44",
+      "reference_text_sha256": "a4d49979c1a59d83af7deda83039924f21601f98f97abdeaa814e226ab28877f",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "adder_select",
+      "baseline_file": "adder_select.v",
+      "reference_file": "adder_select_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "d23a66177b24fa62ad29a0a120c5cae83ff97bec61fb3ab73f17ada8883e54e0",
+      "reference_text_sha256": "d4946a1ac77bfaed378e2bb030b142210e8166f3f5809a183d4b490c4ea43e66",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "addr_calcu",
+      "baseline_file": "addr_calcu.v",
+      "reference_file": "addr_calcu_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "dbef1644da5cebbf6eada8f03b9dbb937b8e990bff72a2e81fb68fb80d8ab247",
+      "reference_text_sha256": "79a4672c5aa87a04d231b0e40de1b90971ab9a1611139abde747da3d6e57d510",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "alu_64bit",
+      "baseline_file": "alu_64bit.v",
+      "reference_file": "alu_64bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "ebeb308e82a39e2c12b45a87466638240f0a079f1d0e3ee2bf38c55e687a09f6",
+      "reference_text_sha256": "8f9b1e55ddaf535fb41324cc56645a3b55cc45a879a654683dee053f2695d05a",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "alu_8bit",
+      "baseline_file": "alu_8bit.v",
+      "reference_file": "alu_8bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "907fa9b86a6a68dce1017825592bfdb93e9725a5a766d011b9c85276484f631d",
+      "reference_text_sha256": "acf687c233e9fcce20e027d133b90f6732785b1e8edbb3e109e845426c592fbf",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "calculation",
+      "baseline_file": "calculation.v",
+      "reference_file": "calculation_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "a6454c513f9813dc7fe3658825f695196801b35f0f9e3003dff7cce565c1be6a",
+      "reference_text_sha256": "77f75bb6755ebd6eb1d912101eaee078b55bb48e90440d5a61f90a89c6619d78",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "comparator_16bit",
+      "baseline_file": "comparator_16bit.v",
+      "reference_file": "comparator_16bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "40ab895c1078844acc0948b374cfc7fb5cea2fdda26aa9c7f142e099e140540a",
+      "reference_text_sha256": "584af6da3a665085cae5e98bab8863bce46a142e41d7a8ff1fb67f9f703e7dd4",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "comparator_2bit",
+      "baseline_file": "comparator_2bit.v",
+      "reference_file": "comparator_2bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "588648f1553b2fe0f6efa3b7e1d91092ff6b29309ba52b4b0d65f0b27aab359f",
+      "reference_text_sha256": "5c0514cf7c736c4dbea1489a61b9a81d1a30a82c40f5a8a4f4d2c60a998e6f0f",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "comparator_4bit",
+      "baseline_file": "comparator_4bit.v",
+      "reference_file": "comparator_4bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "722ba41893dd940dcb7d7c5bd5450c5ad9f44a95dfb42a3810fb50cb67c6d522",
+      "reference_text_sha256": "2d6e915f21ae74e667d1324739044a22dae259b18333a4e964b133383c1d72bb",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "comparator_8bit",
+      "baseline_file": "comparator_8bit.v",
+      "reference_file": "comparator_8bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "2d49d4ad1e86e4e9a1294655d41ab7f5a0127cfeab540fc4cf67d21ba6545596",
+      "reference_text_sha256": "48a1074b58149ba92a9f8fba13cab4bc72f58f266ad661b587aee87eeeebccec",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "comparator",
+      "baseline_file": "comparator.v",
+      "reference_file": "comparator_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "f17e486f9af6526abe22b0ae2ff2a8873febc28883e945db680bfabc22208526",
+      "reference_text_sha256": "f3de2f33dd7f65989b66f5c7d492ccb9f0fe88ddde3234848f7aa4d482a5f75d",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "decoder_6bit",
+      "baseline_file": "decoder_6bit.v",
+      "reference_file": "decoder_6bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "a0b33f6433bcd973b7114629f907ddf465cabc2be7704ff55f543c23b60030f1",
+      "reference_text_sha256": "c9d0c55af61726a23e5b76461d2ddc7c5979628367b687a0f26b02a3c5e7bc25",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "decoder_8bit",
+      "baseline_file": "decoder_8bit.v",
+      "reference_file": "decoder_8bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "f8b37022691624de48b1bd016b00284955f121596335884e4565b8ac525bb557",
+      "reference_text_sha256": "9b506dac58c6e6e371fafd3bb4b345b306fd61cfcb0422e4e2fb6e79eed7c8fb",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "divider_16bit",
+      "baseline_file": "divider_16bit.v",
+      "reference_file": "divider_16bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "0518e4488fd2b846991150b3b73a32d8377773f43ad146e4de61a109c44d1842",
+      "reference_text_sha256": "b79a6f2770f43a0b2bbbaa96c2760c7daf2162f6380404305122ed30a11109d4",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "divider_32bit",
+      "baseline_file": "divider_32bit.v",
+      "reference_file": "divider_32bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "d5a3bc387ebfa437a08f74850641edb9be8b85f6789de76dc01ba11c8543bc84",
+      "reference_text_sha256": "2468e86ff484b8d88f1aff1d437a8ca0242034ecc890468042391c38c121a375",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "divider_4bit",
+      "baseline_file": "divider_4bit.v",
+      "reference_file": "divider_4bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "eaa18a54ed185ba45101040c2e4f0d63cf1b5dd78cadc78e826dd4899cf33cee",
+      "reference_text_sha256": "466af469d2aced1a9ee25418f2bf00add2c6b216d6f4155d9400d5d5b4f8b5e8",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "divider_8bit",
+      "baseline_file": "divider_8bit.v",
+      "reference_file": "divider_8bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "60511d24cfacb63ecc64be73d89edd4c07f41b863465b59d759f28c5e8958cbe",
+      "reference_text_sha256": "411f0bc3cff82ac02438006b7d7ab41b18cba720e5daa1b11c5be3d092c9cd94",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "fsm_encode",
+      "baseline_file": "fsm_encode.v",
+      "reference_file": "fsm_encode_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "0e69d9660f00828d82790c6d5ef49fe373800319a0c7c1eb6d524bd9684b5b09",
+      "reference_text_sha256": "f14676f27ed7e7a822c5d8b8a40e83748d3472c8edc973a805f143cc8c6841c3",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "fsm",
+      "baseline_file": "fsm.v",
+      "reference_file": "fsm_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "285c544c48a267772bff7dfd1fdf845ad914eafa56b96be9bf00d712bb3a584e",
+      "reference_text_sha256": "fdb6aa54e690081c78a3661e545bb4dd6d0a268f3c525b0c6a9044fb41944d41",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "gray",
+      "baseline_file": "gray.v",
+      "reference_file": "gray_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "b1eb7afeff0f6f73d17bbaf83c0b1af98ffa99a2eb09aa672b28dd9aec994fc3",
+      "reference_text_sha256": "c7ccbd1f79c72d7e1e042c781577b47d8fd1f5b2a1f08b7c91083d54457a706b",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "mac",
+      "baseline_file": "mac.v",
+      "reference_file": "mac_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "ceb3269d9a39da722bc97d46c2d5c2cdcc3f2ac3f17cba6e9e96605bebf75c6e",
+      "reference_text_sha256": "1cb2307eb1b3f16b5e9dafaea739892e8153910c676b055ab64651d0320bff74",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "mul_const",
+      "baseline_file": "mul_const.v",
+      "reference_file": "mul_const_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "a81190e125509726276c70a7395468daace2a3d778db1961363ce32f6f820e6c",
+      "reference_text_sha256": "b3c6325669cc76d00d67d786926124955ca66a938447cefbdfcbd382c67714fe",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "mul",
+      "baseline_file": "mul.v",
+      "reference_file": "mul_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "81cb8f11fe1457c1e44216eba357d5a80678178029e03556727cd744935937a9",
+      "reference_text_sha256": "ff692c10b165dd734d3b8bc0c5c61da784db2a7cd3caa45ff9e8592335c94fb2",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "mul_subexpression",
+      "baseline_file": "mul_subexpression.v",
+      "reference_file": "mul_subexpression_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "8a1c56b835ffdaa91200cd23ff71e03c1a5432b8b08c5896176ae7f2ac55516e",
+      "reference_text_sha256": "690947c75ab245313390a9fc75952cf20f3df261f8e2271935d5a9955d51d746",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "mult_if",
+      "baseline_file": "mult_if.v",
+      "reference_file": "mult_if_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "6e6908191f555810160f25e21c4c3f6662b044b7252cf103cfb34cb81b31c2a7",
+      "reference_text_sha256": "6cdce804995a2d1b7597e9a66561e02719b2d5a7d682fc11258774250ab79e8d",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "mux_4to1_16bit",
+      "baseline_file": "mux_4to1_16bit.v",
+      "reference_file": "mux_4to1_16bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "8736bd39cb5f2b3803e18e2d84e74c2b09dcbd08093e58f0718785971df1d7bb",
+      "reference_text_sha256": "b2def2d16812f80a2fe0d9437b9cc1043dbbdbc8ec9ce505f47f1009a6ed11d9",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "mux_4to1_64bit",
+      "baseline_file": "mux_4to1_64bit.v",
+      "reference_file": "mux_4to1_64bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "48c44a6506cb2b165a84ca2fb1251ccb9f39bd72635000416db908fa679817e8",
+      "reference_text_sha256": "4653429ad6222ff707f3e5c58d45141012c8f1f9b1e496e8ac66a9368ae7c502",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "mux_dead",
+      "baseline_file": "mux_dead.v",
+      "reference_file": "mux_dead_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "515253e90dc47b4a8d7321c496565f3c76d99cffd39e17322471e274422a9f13",
+      "reference_text_sha256": "5cf7d6807c853ca2a352be0520f01c154dda077c1644b05892cf9c4d185838ce",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "mux_encode",
+      "baseline_file": "mux_encode.sv",
+      "reference_file": "mux_encode_ref.sv",
+      "language": "systemverilog",
+      "baseline_text_sha256": "745c9d4d0f1a92ffcfc932e4d5e46a3bc6fd6bbb78cffe03126bb00d73238b03",
+      "reference_text_sha256": "151f75149c9f64dc7749cd2a7eb7b2ada35175a52bedb768494ab321a734948d",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "mux_large",
+      "baseline_file": "mux_large.v",
+      "reference_file": "mux_large_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "4559cc484e66258f2a4d477231e3159ef80117eb2acff1bb1855074f38835611",
+      "reference_text_sha256": "60bd9b4476a7198eda5d8e6adc99966e29d1dfb047b7ec895965d91fe35b3b15",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "register",
+      "baseline_file": "register.v",
+      "reference_file": "register_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "346024f16951831951c29b9070636de8e3ee3991a68eeceee9bcf04217d2358e",
+      "reference_text_sha256": "82a9e92699e9a18345fd49551a76825107d92607d3099562761a7128db42e384",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "saturating_add",
+      "baseline_file": "saturating_add.v",
+      "reference_file": "saturating_add_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "9c5d801432c138af2daee3bb2299a68ccf2e4cab0f4621186692a75df35e5a90",
+      "reference_text_sha256": "7b74e54e800651a6bb177429c1de94a00a0de1a01b1cf91706bf690025417459",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "selector",
+      "baseline_file": "selector.v",
+      "reference_file": "selector_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "8add9ea17b54580851b94f55e23a16449a9daa8189bf49d19c237685ab249c90",
+      "reference_text_sha256": "cb1c7fa58a2eda6a2d935ea20bf5665141b6c7b6a716cd402e12278e73fece2d",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "sub_16bit",
+      "baseline_file": "sub_16bit.v",
+      "reference_file": "sub_16bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "8d023a6b4ae896a214795cef8415e186f93bc2b73050fec0c437db3a9db5be45",
+      "reference_text_sha256": "29b8247845599982759ce7f371a6e9a359cb0d8de8d0953f6d7fe36cbb805556",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "sub_32bit",
+      "baseline_file": "sub_32bit.v",
+      "reference_file": "sub_32bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "16007b6265c1ba93442db3bfd47c19ed6a2964552417b736c64378a1983b2784",
+      "reference_text_sha256": "c0892c37c1c4e30453179d30a2c6ca302b5f3e30081fe4cf51757dc587bdbd7d",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "sub_4bit",
+      "baseline_file": "sub_4bit.v",
+      "reference_file": "sub_4bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "8ea0aa906533970c7505df4e8dc64c138378e4a1f46cd0c9d37334f21888ff28",
+      "reference_text_sha256": "0ad434cbacf786d1d659e79af90abb3e48670f3c6141cd8d792841fda8473341",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "sub_8bit",
+      "baseline_file": "sub_8bit.v",
+      "reference_file": "sub_8bit_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "0652256e6aba9c957c036bccd317ea40dc917389370f7970d6761e70fc9383e8",
+      "reference_text_sha256": "cc722c80fa72cce4b8889b2115995d919697717058afec8d49b93c69ca0b685c",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    },
+    {
+      "id": "ticket_machine",
+      "baseline_file": "ticket_machine.v",
+      "reference_file": "ticket_machine_ref.v",
+      "language": "verilog",
+      "baseline_text_sha256": "990c07b612825a70b3b420454a1493be27928d57d6f71c1d561d83494105caaa",
+      "reference_text_sha256": "18cb49cee245e6449e87a3da1f3c7384c7fe694d9b4a694bf7181a918a2e31a0",
+      "status": "unqualified",
+      "notes": [
+        "Read-only source remains in external/RTL-OPT Parquet.",
+        "Pair orientation is sourced from the dataset card and must be formally checked per task."
+      ]
+    }
+  ]
+}

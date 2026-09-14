@@ -1,0 +1,36 @@
+{
+  "id": "mux.priority_restructure",
+  "name": "Restructure priority selection logic",
+  "family": "mux_restructuring",
+  "applies_when": {
+    "class": [
+      "muxing",
+      "priority"
+    ],
+    "pattern_in": [
+      "priority_mux",
+      "case_mux"
+    ],
+    "requires_flags": [
+      "allow_mux_restructuring"
+    ]
+  },
+  "latency_effect": "preserves",
+  "sec_recipe": "equiv_make+equiv_induct",
+  "template": "Rewrite a priority or case selection cone into an equivalent balanced or directly decoded selection form.",
+  "example": {
+    "before": "always @* if (s0) y=a; else if (s1) y=b; else y=c;",
+    "after": "always @* casez ({s0,s1}) 2'b1?: y=a; 2'b01: y=b; default: y=c; endcase"
+  },
+  "guardrails": [
+    "Preserve exact priority, default behavior, widths, and X-sensitive semantics.",
+    "Do not introduce state or change latency.",
+    "Change only the source-attributed selection cone."
+  ],
+  "version": "1.0.0",
+  "target_operator_roles": [
+    "$mux",
+    "$pmux"
+  ],
+  "expected_equivalence_class": "combinational_same_latency"
+}
