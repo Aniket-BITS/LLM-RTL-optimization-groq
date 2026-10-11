@@ -330,5 +330,5 @@ The long-term goal is to grow Nebula from an iterative GenAI-assisted optimizer 
 | Name | Email |
 |---|---|
 | Aniket Gupta | f20230722@pilani.bits-pilani.ac.in |
-| Adwitya Vyas | f20230324@pilani.bits-pilani.ac.in |
+| Adwitya Vyas |  |
 | Sagnik Roy | f20230702@pilani.bits-pilani.ac.in |
